@@ -29,8 +29,15 @@
   .move-strip a:hover { color: var(--accent-hover); }
 
   /* ---------- status list (also doubles as the action-tab switcher) ---------- */
-  .status-list { display: flex; flex-direction: column; gap: 10px; }
-  .status-item { display: flex; align-items: center; gap: 12px; }
+  /* margin-bottom here (not just the inter-row gap) — this list is doing
+     double duty as both a summary and the table's tab switcher, so it
+     needs a clearer break from the table controls below it than the 10px
+     rhythm between its own rows, or the two sections read as one blob. */
+  .status-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px; }
+  .status-item {
+    display: flex; align-items: center; gap: 12px;
+    border-radius: var(--radius-sm); margin: 0 -8px; padding: 6px 8px; border: 1px solid transparent;
+  }
   .status-swatch { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
   .status-name { width: 110px; flex: 0 0 auto; font-size: var(--text-md); font-weight: 600; }
   .status-blurb { flex: 1; font-size: var(--text-sm); color: var(--text-muted); }
@@ -38,12 +45,17 @@
   .status-fill { position: absolute; left: 0; top: 0; height: 100%; border-radius: 4px; min-width: 3px; }
   .status-nums { flex: 0 0 auto; width: 190px; text-align: right; font-size: var(--text-sm); font-variant-numeric: tabular-nums; color: var(--text-secondary); }
   .status-item-clickable {
-    cursor: pointer; border-radius: var(--radius-sm); margin: 0 -8px; padding: 6px 8px;
-    border: 1px solid transparent; transition: background var(--transition-fast), border-color var(--transition-fast);
+    cursor: pointer; transition: background var(--transition-fast), border-color var(--transition-fast);
   }
   .status-item-clickable:hover { background: var(--page); }
   .status-item-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-  .status-item-clickable.active { background: var(--page); border-color: var(--border); }
+  .status-item-clickable.active { background: var(--surface-2); border-color: var(--border); box-shadow: var(--shadow-sm); }
+  /* The "Healthy" row — informational only, no tab to switch to. Same box
+     model as the clickable rows above (padding/margin now live on the
+     shared .status-item rule) so all 5 rows keep a consistent height and
+     rhythm — it was the odd one out before, sitting flush with no padding
+     while its siblings did, which is what made the gap after it look off. */
+  .status-item-static { opacity: 0.65; }
 
   .tab-panel { display: none; }
   .tab-panel.active { display: block; }
@@ -152,7 +164,15 @@ function colsFor(key) {
 const statusTabsEl = document.getElementById('status-tabs');
 const panelsEl = document.getElementById('tab-panels');
 
-const maxCount = Math.max(...TAB_DEFS.map(t => statusMeta(t.key).count), 1);
+// "Healthy" has no tab of its own (nothing actionable to click into — no
+// DATA.tables.healthy), but it's usually the majority of the catalog by
+// count and value, so leaving it out entirely would mean nothing on the
+// page ever states it. Rendered as a 5th, non-clickable row instead of a
+// tab. Scaled against the true max across all 5 statuses (not just the 4
+// tabs) so the bars stay proportionally honest — healthy is typically the
+// longest bar here, which is the point.
+const healthyMeta = statusMeta('healthy');
+const maxCount = Math.max(...TAB_DEFS.map(t => statusMeta(t.key).count), healthyMeta ? healthyMeta.count : 0, 1);
 statusTabsEl.innerHTML = TAB_DEFS.map((t, i) => {
   const s = statusMeta(t.key);
   const color = css.getPropertyValue(s.color_var).trim() || '#2a78d6';
@@ -166,7 +186,18 @@ statusTabsEl.innerHTML = TAB_DEFS.map((t, i) => {
       <span class="status-nums">${fmtNum(s.count)} SKUs · ${fmtINR(s.value)}</span>
       <span class="status-blurb">${s.blurb}</span>
     </div>`;
-}).join('');
+}).join('') + (healthyMeta ? (() => {
+  const color = css.getPropertyValue(healthyMeta.color_var).trim() || '#2a78d6';
+  const pct = (100 * healthyMeta.count / maxCount).toFixed(1);
+  return `
+    <div class="status-item status-item-static">
+      <span class="status-swatch" style="background:${color}"></span>
+      <span class="status-name">${healthyMeta.label}</span>
+      <span class="status-track"><span class="status-fill" style="width:${pct}%;background:${color}"></span></span>
+      <span class="status-nums">${fmtNum(healthyMeta.count)} SKUs · ${fmtINR(healthyMeta.value)}</span>
+      <span class="status-blurb">${healthyMeta.blurb}</span>
+    </div>`;
+})() : '');
 
 panelsEl.innerHTML = TAB_DEFS.map((t, i) => `
   <div class="tab-panel${i === 0 ? ' active' : ''}" id="panel-${t.key}">

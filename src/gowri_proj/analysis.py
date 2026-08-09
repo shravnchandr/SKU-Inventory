@@ -5,11 +5,16 @@ forward, though the very first import may span several months at once. This
 module combines all imported reports into:
 
 - a **current snapshot**: closing stock and value from the most recently
-  imported report (i.e. what's on the shelf right now)
-- a **trailing sales rate**: sales summed across the most recent reports,
-  covering at least TRAILING_DAYS_TARGET days (falling back to all imported
-  history if there isn't that much yet) — this is what "days of cover" is
-  measured against, so it gets more precise as more months are imported
+  imported report (i.e. what's on the shelf right now) — the only figures
+  that are ever a single month's, since "right now" has no other meaning
+- a **trailing window**: opening stock, purchases, and sales, all summed/
+  anchored across the most recent reports together, covering at least
+  TRAILING_DAYS_TARGET days (falling back to all imported history if there
+  isn't that much yet). Sales here is what "days of cover" is measured
+  against, so it gets more precise as more months are imported. Opening
+  and purchases share the same window deliberately — showing them from a
+  single month next to several months of sales would make the numbers look
+  inconsistent even though each is individually correct
 - a **trend series**: one data point per imported report, for charting how
   stock value and sales have moved over time
 
@@ -37,7 +42,13 @@ import pandas as pd
 LOW_STOCK_DAYS = 15
 OVERSTOCK_DAYS = 90
 TRAILING_DAYS_TARGET = 90  # how much recent history to average sales pace over
-DEAD_STOCK_DAYS = 90  # "hasn't sold in 3+ months since it was last purchased"
+DEAD_STOCK_DAYS = 90  # "hasn't sold or been restocked in 3+ months" — see _compute_dead_stock
+
+# Valid range for the four threshold settings above — enforced identically
+# by the web Settings page (webapp.py) and the CLI flags (main.py), so both
+# reject e.g. a 0-day trailing window (which would divide by zero) the same way.
+THRESHOLD_DAYS_MIN = 1
+THRESHOLD_DAYS_MAX = 3650
 
 # Floor for how far back _compute_dead_stock searches for a SKU's last
 # purchase/sale — covers the aging buckets' largest finite boundary (730
@@ -55,6 +66,19 @@ def _period_label(period_start: date, period_end: date) -> str:
     if period_start.year == period_end.year and period_start.month == period_end.month:
         return period_start.strftime("%b %Y")
     return f"{period_start.strftime('%b %Y')}–{period_end.strftime('%b %Y')}"
+
+
+# Canonical status list, in priority order (matches _status()'s if/elif
+# chain below) — the one place this list is defined; dashboard.py, main.py,
+# and excel_export.py all import it rather than repeating the literal.
+STATUS_ORDER = ["out_of_stock", "low_stock", "dead_stock", "overstock", "healthy"]
+
+
+def format_days_of_cover(value: float) -> float | None:
+    """days_of_cover is `inf` for a SKU with no sales in the trailing window
+    (nothing to divide by) — not valid JSON, so every place that serializes
+    it for the API/UI needs this same None-if-infinite conversion."""
+    return None if value == float("inf") else round(float(value), 1)
 
 
 def _status(
@@ -256,21 +280,41 @@ def summarize_history(
     latest = reports.iloc[-1]
     latest_report_id = latest["report_id"]
 
-    # --- current snapshot: what's on the shelf right now ---
-    current = all_entries[all_entries["report_id"] == latest_report_id][
-        ["brand", "sku", "opening_stock", "purchase", "closing_stock", "value"]
-    ].copy()
-
-    # --- trailing sales rate (drives days-of-cover, low/overstock) ---
+    # --- trailing window: opening/purchased/sold, all from the same span ---
     # Grouped by sku alone, not (brand, sku) — see _compute_dead_stock's
     # docstring for why: a brand-label rename mid-window would otherwise
-    # silently drop the sales recorded under the old label, understating
-    # the sales pace for anything renamed within the trailing window.
+    # silently drop the activity recorded under the old label.
+    #
+    # Opening/Purchased share Sold's window rather than just the latest
+    # month (see the module docstring for why) — concretely, that's the
+    # difference between "opening 19, purchased 10, sold 137" looking
+    # broken vs. "opening 10, purchased 128, sold 137" balancing to the
+    # actual closing stock.
     trailing_reports = _select_trailing_reports(reports, trailing_days_target)
     trailing_days = int(trailing_reports["period_days"].sum())
     trailing_entries = all_entries[all_entries["report_id"].isin(trailing_reports["report_id"])]
-    trailing_sales = (
-        trailing_entries.groupby("sku")["sales"].sum().reset_index(name="trailing_sales")
+
+    # --- current snapshot: what's on the shelf right now ---
+    # Sliced from trailing_entries, not all_entries — _select_trailing_reports
+    # always includes the latest report (it starts accumulating from there),
+    # so the latest report's rows are already a subset of trailing_entries.
+    # Scanning that instead of the full imported history keeps this bounded
+    # by the trailing window rather than growing with years of history.
+    # Only closing_stock/value here — opening_stock/purchase come from the
+    # trailing aggregate below instead.
+    current = trailing_entries[trailing_entries["report_id"] == latest_report_id][
+        ["brand", "sku", "closing_stock", "value"]
+    ].copy()
+
+    trailing_agg = (
+        trailing_entries.sort_values("period_end")
+        .groupby("sku")
+        .agg(
+            trailing_opening=("opening_stock", "first"),
+            trailing_purchase=("purchase", "sum"),
+            trailing_sales=("sales", "sum"),
+        )
+        .reset_index()
     )
 
     # --- dead stock: no sales since last purchase, independent of the trailing window above ---
@@ -278,7 +322,12 @@ def summarize_history(
         all_entries, current, latest["period_end"], reports.iloc[0]["period_start"], dead_stock_days
     )
 
-    merged = current.merge(trailing_sales, on="sku", how="left")
+    merged = current.merge(trailing_agg, on="sku", how="left")
+    # Every SKU in `current` comes from the latest report, which is always
+    # included in the trailing window by construction — so these fillna
+    # calls are a defensive fallback, not something normal data should hit.
+    merged["trailing_opening"] = merged["trailing_opening"].fillna(0.0)
+    merged["trailing_purchase"] = merged["trailing_purchase"].fillna(0.0)
     merged["trailing_sales"] = merged["trailing_sales"].fillna(0.0)
     merged = merged.merge(dead_flags, on="sku", how="left")
     merged["is_dead"] = merged["is_dead"].fillna(False)
@@ -303,10 +352,12 @@ def summarize_history(
         ["out_of_stock", "dead_stock", "low_stock", "overstock"],
         default="healthy",
     )
-    # Keep a "sales" alias so downstream table/column code matches the
-    # trailing-window sales figure it displays (dead-stock classification
-    # uses its own since-purchase window internally, above).
-    merged = merged.rename(columns={"trailing_sales": "sales"})
+    # Aliased to the plain names downstream table/column code already
+    # expects (dead-stock classification uses its own since-purchase window
+    # internally, above — unaffected by this).
+    merged = merged.rename(
+        columns={"trailing_sales": "sales", "trailing_opening": "opening_stock", "trailing_purchase": "purchase"}
+    )
 
     status_counts = merged["status"].value_counts().to_dict()
     status_values = merged.groupby("status")["value"].sum().to_dict()
@@ -338,14 +389,18 @@ def summarize_history(
         for _, r in reports_ordered.iterrows()
     ]
     top_brand_names = list(top_brands_by_value["brand"].head(5))
-    brand_units_sold: dict[str, list[float]] = {}
-    for brand in top_brand_names:
-        by_report = (
-            all_entries[all_entries["brand"] == brand].groupby("report_id")["sales"].sum()
-        )
-        brand_units_sold[brand] = [
-            float(by_report.get(rid, 0.0)) for rid in reports_ordered["report_id"]
-        ]
+    # One pass over all_entries for all 5 brands together, rather than one
+    # full-table scan per brand — matters once history spans years of
+    # imported reports.
+    by_brand_report = (
+        all_entries[all_entries["brand"].isin(top_brand_names)]
+        .groupby(["brand", "report_id"])["sales"]
+        .sum()
+    )
+    brand_units_sold: dict[str, list[float]] = {
+        brand: [float(by_brand_report.get((brand, rid), 0.0)) for rid in reports_ordered["report_id"]]
+        for brand in top_brand_names
+    }
 
     trend = TrendSeries(
         labels=labels,
@@ -408,7 +463,7 @@ def search_skus(enriched: pd.DataFrame, query: str, limit: int = 50) -> list[dic
             "status": r["status"],
             "closing_stock": float(r["closing_stock"]),
             "value": round(float(r["value"]), 2),
-            "days_of_cover": None if r["days_of_cover"] == float("inf") else round(float(r["days_of_cover"]), 1),
+            "days_of_cover": format_days_of_cover(r["days_of_cover"]),
         }
         for _, r in matches.iterrows()
     ]

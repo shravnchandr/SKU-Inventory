@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .analysis import InventorySummary
+from .analysis import STATUS_ORDER, InventorySummary, format_days_of_cover
 
 
 def _sanitize(obj):
@@ -31,7 +31,6 @@ STATUS_LABELS = {
     "overstock": "Overstock",
     "healthy": "Healthy",
 }
-STATUS_ORDER = ["out_of_stock", "low_stock", "dead_stock", "overstock", "healthy"]
 STATUS_COLOR_VAR = {
     "out_of_stock": "--status-critical",
     "dead_stock": "--status-serious",
@@ -56,18 +55,23 @@ def _status_blurbs(thresholds: dict) -> dict[str, str]:
     }
 
 
-TABLE_COLUMNS = [
-    ("brand", "Brand"),
-    ("sku", "SKU"),
-    ("opening_stock", "Opening"),
-    ("purchase", "Purchased"),
-    ("sales", "Sold"),
-    ("closing_stock", "Closing"),
-    ("value", "Value (₹)"),
-    ("days_of_cover", "Days cover"),
-]
+def _table_columns(trailing_days: int) -> list[tuple[str, str]]:
+    """Action-list table columns.
 
-DEAD_STOCK_TABLE_COLUMNS = TABLE_COLUMNS + [("days_since_activity", "Days dead")]
+    Opening/Purchased/Sold are labeled with the trailing window's length so
+    it's clear they share one span (see analysis.summarize_history for why)
+    — only Closing is a single point-in-time snapshot.
+    """
+    return [
+        ("brand", "Brand"),
+        ("sku", "SKU"),
+        ("opening_stock", f"Opening ({trailing_days}d)"),
+        ("purchase", f"Purchased ({trailing_days}d)"),
+        ("sales", f"Sold ({trailing_days}d)"),
+        ("closing_stock", "Closing (now)"),
+        ("value", "Value (₹)"),
+        ("days_of_cover", "Days cover"),
+    ]
 
 
 def _round_records(df: pd.DataFrame) -> list[dict]:
@@ -80,9 +84,7 @@ def _round_records(df: pd.DataFrame) -> list[dict]:
     if "value" in d.columns:
         d["value"] = d["value"].round(2)
     if "days_of_cover" in d.columns:
-        d["days_of_cover"] = d["days_of_cover"].apply(
-            lambda v: None if v == float("inf") else round(v, 1)
-        )
+        d["days_of_cover"] = d["days_of_cover"].apply(format_days_of_cover)
     return d.to_dict(orient="records")
 
 
@@ -98,7 +100,20 @@ def build_payload(
     summary: InventorySummary,
     quality_issues: list[dict] | None = None,
     thresholds: dict | None = None,
+    include_tables: bool = True,
 ) -> dict:
+    """Build the full page payload.
+
+    ``include_tables=False`` skips the row-level SKU tables (out_of_stock/
+    low_stock/dead_stock/overstock — the biggest thing in this payload by
+    far, ~1.36MB of the ~1.37MB total on a real 15k-SKU database) and the
+    table-column definitions that only exist to label them. Pass this from
+    any page that doesn't render those tables — e.g. the Trends page, which
+    only reads meta/kpis/leaderboards/trend and would otherwise silently
+    ship the entire action-list dataset a second time on every visit for no
+    reason. The standalone CLI export (dashboard_template.html) needs both
+    on one page, so it keeps the default.
+    """
     meta = summary.meta
     thresholds = thresholds or DEFAULT_THRESHOLDS
     blurbs = _status_blurbs(thresholds)
@@ -115,12 +130,18 @@ def build_payload(
             }
         )
 
-    tables = {
-        "out_of_stock": _round_records(summary.out_of_stock),
-        "low_stock": _round_records(summary.low_stock),
-        "dead_stock": _round_records(summary.dead_stock),
-        "overstock": _round_records(summary.overstock),
-    }
+    tables = {}
+    table_columns: list[tuple[str, str]] = []
+    dead_stock_table_columns: list[tuple[str, str]] = []
+    if include_tables:
+        tables = {
+            "out_of_stock": _round_records(summary.out_of_stock),
+            "low_stock": _round_records(summary.low_stock),
+            "dead_stock": _round_records(summary.dead_stock),
+            "overstock": _round_records(summary.overstock),
+        }
+        table_columns = _table_columns(meta.trailing_days)
+        dead_stock_table_columns = table_columns + [("days_since_activity", "Days dead")]
 
     trend = summary.trend
 
@@ -164,9 +185,9 @@ def build_payload(
             for r in summary.top_skus_by_sales.to_dict(orient="records")
         ],
         "tables": tables,
-        "table_columns": TABLE_COLUMNS,
-        "dead_stock_table_columns": DEAD_STOCK_TABLE_COLUMNS,
-        "dead_stock_aging": summary.dead_stock_aging,
+        "table_columns": table_columns,
+        "dead_stock_table_columns": dead_stock_table_columns,
+        "dead_stock_aging": summary.dead_stock_aging if include_tables else [],
         "trend": {
             "labels": trend.labels,
             "period_ends": trend.period_ends,

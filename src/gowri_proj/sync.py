@@ -95,23 +95,19 @@ def sync_folder(conn: sqlite3.Connection, folder: str) -> SyncResult:
         # conflicting file can't quietly slip through on a second try. It
         # only stops blocking once the old report is actually gone (removed
         # via the Reports page / `remove`), at which point old_report is None.
-        if known is not None and known["report_id"] is not None:
-            old_report = db.get_report(conn, known["report_id"])
-            if old_report is not None and (
-                old_report["period_start"] != meta.period_start.isoformat()
-                or old_report["period_end"] != meta.period_end.isoformat()
-            ):
-                result.filename_reused.append(
-                    (
-                        rel_name,
-                        f"{old_report['period_start']} to {old_report['period_end']}",
-                        f"{meta.period_start.isoformat()} to {meta.period_end.isoformat()}",
-                    )
+        old_report = db.find_reused_filename_conflict(conn, known, meta)
+        if old_report is not None:
+            result.filename_reused.append(
+                (
+                    rel_name,
+                    f"{old_report['period_start']} to {old_report['period_end']}",
+                    f"{meta.period_start.isoformat()} to {meta.period_end.isoformat()}",
                 )
-                db.upsert_watched_file(
-                    conn, rel_name, filesize, mtime, known["report_id"], "filename_reused"
-                )
-                continue
+            )
+            db.upsert_watched_file(
+                conn, rel_name, filesize, mtime, known["report_id"], "filename_reused"
+            )
+            continue
 
         existing_report_id = db.period_exists(conn, meta)
         if existing_report_id is not None and (known is None or known["report_id"] != existing_report_id):

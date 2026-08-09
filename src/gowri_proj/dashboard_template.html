@@ -169,10 +169,6 @@
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
   @media (max-width: 860px) { .grid-2 { grid-template-columns: 1fr; } }
 
-  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
-  @media (max-width: 1100px) { .grid-3 { grid-template-columns: 1fr 1fr; } }
-  @media (max-width: 640px) { .grid-3 { grid-template-columns: 1fr; } }
-
   .bar-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; }
   .bar-row .bar-label {
     width: 40%; flex: 0 0 40%; font-size: var(--text-base); color: var(--text-secondary);
@@ -217,8 +213,11 @@
 
   .aging-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 16px; }
 
-  .status-list { display: flex; flex-direction: column; gap: 10px; }
-  .status-item { display: flex; align-items: center; gap: 12px; }
+  .status-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px; }
+  .status-item {
+    display: flex; align-items: center; gap: 12px;
+    border-radius: var(--radius-sm); margin: 0 -8px; padding: 6px 8px; border: 1px solid transparent;
+  }
   .status-swatch { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
   .status-name { width: 110px; flex: 0 0 auto; font-size: var(--text-md); font-weight: 600; }
   .status-blurb { flex: 1; font-size: var(--text-sm); color: var(--text-muted); }
@@ -226,11 +225,11 @@
   .status-fill { position: absolute; left: 0; top: 0; height: 100%; border-radius: 4px; min-width: 3px; }
   .status-nums { flex: 0 0 auto; width: 190px; text-align: right; font-size: var(--text-sm); font-variant-numeric: tabular-nums; color: var(--text-secondary); }
   .status-item-clickable {
-    cursor: pointer; border-radius: var(--radius-sm); margin: 0 -8px; padding: 6px 8px;
-    border: 1px solid transparent; transition: background var(--transition-fast), border-color var(--transition-fast);
+    cursor: pointer; transition: background var(--transition-fast), border-color var(--transition-fast);
   }
   .status-item-clickable:hover { background: var(--page); }
-  .status-item-clickable.active { background: var(--page); border-color: var(--border); }
+  .status-item-clickable.active { background: var(--surface-2); border-color: var(--border); box-shadow: var(--shadow-sm); }
+  .status-item-static { opacity: 0.65; }
 
   /* ---------- your-move strip ---------- */
   .move-strip {
@@ -646,7 +645,10 @@ function statusMeta(key) {
 const statusTabsEl = document.getElementById('status-tabs');
 const panelsEl = document.getElementById('tab-panels');
 
-const maxCount = Math.max(...TAB_DEFS.map(t => statusMeta(t.key).count), 1);
+// "Healthy" gets a 5th, non-clickable row — see dashboard.html's comment
+// for the full reasoning.
+const healthyMeta = statusMeta('healthy');
+const maxCount = Math.max(...TAB_DEFS.map(t => statusMeta(t.key).count), healthyMeta ? healthyMeta.count : 0, 1);
 statusTabsEl.innerHTML = TAB_DEFS.map((t, i) => {
   const s = statusMeta(t.key);
   const color = css.getPropertyValue(s.color_var).trim() || '#2a78d6';
@@ -659,7 +661,18 @@ statusTabsEl.innerHTML = TAB_DEFS.map((t, i) => {
       <span class="status-nums">${fmtNum(s.count)} SKUs · ${fmtINR(s.value)}</span>
       <span class="status-blurb">${s.blurb}</span>
     </div>`;
-}).join('');
+}).join('') + (healthyMeta ? (() => {
+  const color = css.getPropertyValue(healthyMeta.color_var).trim() || '#2a78d6';
+  const pct = (100 * healthyMeta.count / maxCount).toFixed(1);
+  return `
+    <div class="status-item status-item-static">
+      <span class="status-swatch" style="background:${color}"></span>
+      <span class="status-name">${healthyMeta.label}</span>
+      <span class="status-track"><span class="status-fill" style="width:${pct}%;background:${color}"></span></span>
+      <span class="status-nums">${fmtNum(healthyMeta.count)} SKUs · ${fmtINR(healthyMeta.value)}</span>
+      <span class="status-blurb">${healthyMeta.blurb}</span>
+    </div>`;
+})() : '');
 
 panelsEl.innerHTML = TAB_DEFS.map((t, i) => `
   <div class="tab-panel${i === 0 ? ' active' : ''}" id="panel-${t.key}">

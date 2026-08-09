@@ -128,6 +128,27 @@ def get_report(conn: sqlite3.Connection, report_id: int) -> sqlite3.Row | None:
     return row
 
 
+def find_reused_filename_conflict(
+    conn: sqlite3.Connection, known: sqlite3.Row | None, meta: ReportMeta
+) -> sqlite3.Row | None:
+    """If `known` (a watched_files row for this filename) points at a report
+    whose period doesn't match `meta`'s, return that stale report — the
+    filename now represents a different period than it used to, without the
+    old report being removed first. Returns None if there's no such
+    conflict. Shared by sync.py's folder scan and webapp.py's direct
+    upload — both need this same check, they just handle a real conflict
+    differently (log-and-skip vs. an immediate HTTP error).
+    """
+    if known is None or known["report_id"] is None:
+        return None
+    old_report = get_report(conn, known["report_id"])
+    if old_report is None:
+        return None
+    if old_report["period_start"] != meta.period_start.isoformat() or old_report["period_end"] != meta.period_end.isoformat():
+        return old_report
+    return None
+
+
 def delete_report(conn: sqlite3.Connection, report_id: int) -> bool:
     """Delete a report and its stock entries. Also forgets any watched_files
     fingerprint pointing at it, so a refresh will re-import the source file
@@ -250,10 +271,6 @@ def upsert_watched_file(
         "status=excluded.status, detail=excluded.detail, checked_at=excluded.checked_at",
         (filename, filesize, mtime, report_id, status, detail),
     )
-
-
-def list_watched_files(conn: sqlite3.Connection) -> pd.DataFrame:
-    return pd.read_sql("SELECT * FROM watched_files ORDER BY filename", conn)
 
 
 def list_watched_files_problems(conn: sqlite3.Connection, limit: int = 20) -> pd.DataFrame:

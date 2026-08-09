@@ -128,8 +128,11 @@ function fmtDate(iso) {
   const d = new Date(iso);
   return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
 }
+// Returns null (not a placeholder string) on a falsy input — some callers
+// branch on that (e.g. "no refresh recorded yet" vs. a formatted date),
+// others just want a display string and add `|| '–'` at the call site.
 function fmtDateTime(iso) {
-  if (!iso) return '–';
+  if (!iso) return null;
   return new Date(iso.replace(' ', 'T') + 'Z').toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
@@ -142,7 +145,7 @@ function renderReportsTable() {
       <td class="num">${r.period_days}</td>
       <td class="num">${r.sku_count.toLocaleString('en-IN')}</td>
       <td>${escapeHtml(r.source_filename || '–')}</td>
-      <td>${fmtDateTime(r.imported_at)}</td>
+      <td>${fmtDateTime(r.imported_at) || '–'}</td>
       <td style="text-align:right"><button class="btn btn-sm btn-danger" data-remove="${r.id}" type="button">Remove</button></td>
     </tr>
   `).join('') || `<tr><td colspan="6" class="empty-note">Nothing imported yet.</td></tr>`;
@@ -152,11 +155,6 @@ function renderReportsTable() {
   });
 }
 renderReportsTable();
-
-function fmtDateTimeLocal(iso) {
-  if (!iso) return null;
-  return new Date(iso.replace(' ', 'T') + 'Z').toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
-}
 
 async function loadImportHealth() {
   const healthCard = document.getElementById('health-card');
@@ -182,7 +180,7 @@ async function loadImportHealth() {
       healthCard.style.display = '';
     }
 
-    const refreshedAt = fmtDateTimeLocal(data.last_refresh);
+    const refreshedAt = fmtDateTime(data.last_refresh);
     document.getElementById('health-refresh').textContent = refreshedAt
       ? `Last refresh: ${refreshedAt}`
       : 'No refresh recorded yet — run a refresh (or upload a file) to start tracking this.';
@@ -214,13 +212,19 @@ async function loadImportHealth() {
               <td>${escapeHtml(p.filename)}</td>
               <td><span class="status-badge" style="background:var(--status-serious)">${escapeHtml(p.status.replace(/_/g, ' '))}</span></td>
               <td>${escapeHtml(p.detail || '–')}</td>
-              <td>${fmtDateTimeLocal(p.checked_at) || '–'}</td>
+              <td>${fmtDateTime(p.checked_at) || '–'}</td>
             </tr>`).join('')}
           </tbody>
         </table>`;
     }
   } catch (e) {
-    pill.style.display = 'none';
+    // Still say something rather than silently showing nothing — a failed
+    // check isn't the same as "everything's fine," and looked identical to
+    // it before this (both hid the pill entirely).
+    pill.style.display = '';
+    pill.style.background = getComputedStyle(document.documentElement).getPropertyValue('--status-critical').trim();
+    pill.textContent = `⚠ Couldn't check import health`;
+    pill.title = e.message;
     healthCard.style.display = 'none';
   }
 }

@@ -22,7 +22,14 @@ import webbrowser
 from pathlib import Path
 
 from src.gowri_proj import db
-from src.gowri_proj.analysis import find_data_quality_issues, find_import_gaps, summarize_history
+from src.gowri_proj.analysis import (
+    STATUS_ORDER,
+    THRESHOLD_DAYS_MAX,
+    THRESHOLD_DAYS_MIN,
+    find_data_quality_issues,
+    find_import_gaps,
+    summarize_history,
+)
 from src.gowri_proj.dashboard import write_dashboard
 from src.gowri_proj.excel_export import export_excel
 from src.gowri_proj.parser import parse_stock_statement
@@ -103,7 +110,7 @@ def _report_sync(result: SyncResult) -> None:
     if result.unchanged:
         print(f"  = {len(result.unchanged)} file(s) unchanged since last refresh")
     if not (result.imported or result.duplicate_period or result.filename_reused or result.errors or result.unchanged):
-        print(f"  (no files found)")
+        print("  (no files found)")
 
 
 def cmd_refresh(args: argparse.Namespace) -> None:
@@ -123,17 +130,20 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
 
 
 def _bounded_days(value: str) -> int:
-    """argparse type= for the threshold flags — mirrors the 1-3650 bound the
-    web Settings page enforces (webapp.py's /api/settings), so a stray
-    ``--trailing-days 0`` fails fast with a clear error instead of silently
-    zeroing out daily_sales and misclassifying every SKU as dead/overstock.
+    """argparse type= for the threshold flags — shares THRESHOLD_DAYS_MIN/MAX
+    with the web Settings page's validation (webapp.py's /api/settings), so
+    a stray ``--trailing-days 0`` fails fast with a clear error instead of
+    silently zeroing out daily_sales and misclassifying every SKU as
+    dead/overstock.
     """
     try:
         n = int(value)
     except ValueError:
         raise argparse.ArgumentTypeError(f"{value!r} is not a whole number")
-    if not (1 <= n <= 3650):
-        raise argparse.ArgumentTypeError(f"must be between 1 and 3650 days (got {n})")
+    if not (THRESHOLD_DAYS_MIN <= n <= THRESHOLD_DAYS_MAX):
+        raise argparse.ArgumentTypeError(
+            f"must be between {THRESHOLD_DAYS_MIN} and {THRESHOLD_DAYS_MAX} days (got {n})"
+        )
     return n
 
 
@@ -183,7 +193,7 @@ def _build_dashboard(args: argparse.Namespace) -> None:
     print(f"Units on hand: {summary.total_units:,.0f}\n")
 
     print("Stock health:")
-    for status in ["out_of_stock", "low_stock", "dead_stock", "overstock", "healthy"]:
+    for status in STATUS_ORDER:
         count = summary.status_counts.get(status, 0)
         value = summary.status_values.get(status, 0.0)
         print(f"  {status:14s} {count:6,d} SKUs   Rs {value:>14,.0f}")

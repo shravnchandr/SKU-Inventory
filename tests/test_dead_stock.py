@@ -86,7 +86,7 @@ def test_no_activity_ever_falls_back_to_earliest_tracked_date_not_the_lookback_w
 def test_no_activity_within_a_long_history_uses_the_lookback_window_not_full_history():
     # Opposite case: plenty of real history exists before the lookback
     # window, but nothing in the window itself — this is the case the
-    # AGING_LOOKBACK_FLOOR_DAYS optimization exists for for. The fallback
+    # AGING_LOOKBACK_FLOOR_DAYS optimization exists for. The fallback
     # should be the window's own cutoff (~750 days back), not scan further.
     earliest = pd.Timestamp("2015-01-01")  # over a decade of real history
     entries = _entries([{"sku": "OTHER", "period_end": "2026-07-31", "purchase": 1, "sales": 1}])

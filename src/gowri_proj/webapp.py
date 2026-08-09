@@ -11,14 +11,17 @@ import secrets
 import tempfile
 from pathlib import Path
 
-from flask import Flask, abort, jsonify, redirect, render_template, request, url_for
+from flask import Flask, abort, g, jsonify, redirect, render_template, request, url_for
 from werkzeug.utils import secure_filename
 
 from . import db
 from .analysis import (
+    THRESHOLD_DAYS_MAX,
+    THRESHOLD_DAYS_MIN,
     brand_history,
     find_data_quality_issues,
     find_import_gaps,
+    format_days_of_cover,
     search_skus,
     sku_history,
     summarize_history,
@@ -67,19 +70,17 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
     app.config["CSRF_TOKEN"] = secrets.token_hex(16)
     Path(uploads_dir).mkdir(parents=True, exist_ok=True)
 
-    def company_name() -> str | None:
-        with db.connect(app.config["DB_PATH"]) as conn:
-            reports = db.list_reports(conn)
-        if reports.empty:
-            return None
-        return reports.iloc[-1]["company"]
-
     def get_current_data():
-        """(all_entries, summary) for the current database state, memoized until
-        the reports table or the saved thresholds change (import/remove/
-        settings save) — so repeat dashboard loads and detail-panel lookups
-        don't re-run the full computation each time.
+        """(all_entries, summary, settings) for the current database state.
+
+        Cached at two levels: app.config["_SUMMARY_CACHE"] across requests
+        (invalidated by a fingerprint — see below), and flask.g within a
+        single request, so a route handler and the company-name context
+        processor rendering the same page share one lookup instead of each
+        paying for their own.
         """
+        if "current_data" in g:
+            return g.current_data
         with db.connect(app.config["DB_PATH"]) as conn:
             # COUNT alone can't tell a delete-then-reinsert within the same
             # replace apart from no change at all, and imported_at is only
@@ -95,25 +96,29 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
             ).fetchone()
             cache = app.config["_SUMMARY_CACHE"]
             if cache and cache[0] == fingerprint:
-                return cache[1], cache[2]
-            if not db.has_data(conn):
-                app.config["_SUMMARY_CACHE"] = (fingerprint, None, None)
-                return None, None
-            all_entries = db.load_all_entries(conn)
-            settings = db.get_settings(conn)
-        summary = summarize_history(
-            all_entries,
-            trailing_days_target=settings["trailing_days_target"],
-            dead_stock_days=settings["dead_stock_days"],
-            low_stock_days=settings["low_stock_days"],
-            overstock_days=settings["overstock_days"],
-        )
-        app.config["_SUMMARY_CACHE"] = (fingerprint, all_entries, summary)
-        return all_entries, summary
+                result = cache[1], cache[2], cache[3]
+            elif not db.has_data(conn):
+                app.config["_SUMMARY_CACHE"] = (fingerprint, None, None, None)
+                result = None, None, None
+            else:
+                all_entries = db.load_all_entries(conn)
+                settings = db.get_settings(conn)
+                summary = summarize_history(
+                    all_entries,
+                    trailing_days_target=settings["trailing_days_target"],
+                    dead_stock_days=settings["dead_stock_days"],
+                    low_stock_days=settings["low_stock_days"],
+                    overstock_days=settings["overstock_days"],
+                )
+                app.config["_SUMMARY_CACHE"] = (fingerprint, all_entries, summary, settings)
+                result = all_entries, summary, settings
+        g.current_data = result
+        return result
 
     @app.context_processor
     def inject_globals():
-        return {"company": company_name(), "csrf_token": app.config["CSRF_TOKEN"]}
+        _, summary, _ = get_current_data()
+        return {"company": summary.meta.company if summary else None, "csrf_token": app.config["CSRF_TOKEN"]}
 
     @app.before_request
     def check_csrf():
@@ -137,33 +142,32 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
 
     @app.get("/dashboard")
     def dashboard():
-        all_entries, summary = get_current_data()
+        _, summary, thresholds = get_current_data()
         if summary is None:
             return redirect(url_for("reports"))
-        with db.connect(app.config["DB_PATH"]) as conn:
-            thresholds = db.get_settings(conn)
         payload = _sanitize(build_payload(summary, None, thresholds))
         return render_template("dashboard.html", active_page="dashboard", payload=payload)
 
     @app.get("/trends")
     def trends():
-        all_entries, summary = get_current_data()
+        _, summary, thresholds = get_current_data()
         if summary is None:
             return redirect(url_for("reports"))
-        with db.connect(app.config["DB_PATH"]) as conn:
-            thresholds = db.get_settings(conn)
-        # Same payload shape as /dashboard — this page just reads a different
-        # subset of it (top_brands_by_value/top_skus_by_value/top_skus_by_sales/
-        # trend instead of status_breakdown/tables). One shared build keeps
-        # both pages reading off the same fingerprint-cached summary, so they
-        # can't ever disagree on the numbers.
-        payload = _sanitize(build_payload(summary, None, thresholds))
+        # Built from the same fingerprint-cached summary as /dashboard, so
+        # the numbers this page shows can never disagree with the dashboard's
+        # — but include_tables=False, since this page's JS never reads
+        # DATA.tables (the out_of_stock/low_stock/dead_stock/overstock
+        # row-level lists). Without that flag every Trends visit would
+        # silently re-download the entire action-list dataset a second time
+        # (~1.36MB of ~1.37MB on a real 15k-SKU database) for a page that
+        # never uses it.
+        payload = _sanitize(build_payload(summary, None, thresholds, include_tables=False))
         return render_template("trends.html", active_page="trends", payload=payload)
 
     @app.get("/api/search")
     def api_search():
         q = request.args.get("q", "")
-        _, summary = get_current_data()
+        _, summary, _ = get_current_data()
         if summary is None:
             return jsonify(results=[])
         return jsonify(results=search_skus(summary.enriched, q))
@@ -171,7 +175,7 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
     @app.get("/api/sku-detail")
     def api_sku_detail():
         brand, sku = request.args.get("brand", ""), request.args.get("sku", "")
-        all_entries, summary = get_current_data()
+        all_entries, summary, _ = get_current_data()
         if summary is None:
             return jsonify(error="No data imported yet."), 404
         history = sku_history(all_entries, sku)
@@ -189,7 +193,7 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
                 "closing_stock": float(row["closing_stock"]),
                 "value": round(float(row["value"]), 2),
                 "sales": float(row["sales"]),
-                "days_of_cover": None if row["days_of_cover"] == float("inf") else round(float(row["days_of_cover"]), 1),
+                "days_of_cover": format_days_of_cover(row["days_of_cover"]),
                 "status": row["status"],
             }
         # Prefer the current snapshot's brand label over the query param —
@@ -201,7 +205,7 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
     @app.get("/api/brand-detail")
     def api_brand_detail():
         brand = request.args.get("brand", "")
-        all_entries, summary = get_current_data()
+        all_entries, summary, _ = get_current_data()
         if summary is None:
             return jsonify(error="No data imported yet."), 404
         history = brand_history(all_entries, brand)
@@ -214,7 +218,7 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
                 "closing_stock": float(r["closing_stock"]),
                 "value": round(float(r["value"]), 2),
                 "status": r["status"],
-                "days_of_cover": None if r["days_of_cover"] == float("inf") else round(float(r["days_of_cover"]), 1),
+                "days_of_cover": format_days_of_cover(r["days_of_cover"]),
             }
             for _, r in skus_df.iterrows()
         ]
@@ -263,7 +267,7 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
 
     @app.get("/api/data-quality")
     def api_data_quality():
-        all_entries, summary = get_current_data()
+        all_entries, summary, _ = get_current_data()
         if summary is None:
             return jsonify(issues=[])
         return jsonify(_sanitize({"issues": find_data_quality_issues(all_entries)}))
@@ -285,8 +289,10 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
                 value = int(raw)
             except (TypeError, ValueError):
                 return jsonify(error=f"'{field_name}' must be a whole number."), 400
-            if not (1 <= value <= 3650):
-                return jsonify(error=f"'{field_name}' must be between 1 and 3650 days."), 400
+            if not (THRESHOLD_DAYS_MIN <= value <= THRESHOLD_DAYS_MAX):
+                return jsonify(
+                    error=f"'{field_name}' must be between {THRESHOLD_DAYS_MIN} and {THRESHOLD_DAYS_MAX} days."
+                ), 400
             values[field_name] = value
         with db.connect(app.config["DB_PATH"]) as conn:
             saved = db.upsert_settings(conn, **values)
@@ -340,18 +346,14 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
 
             with db.connect(app.config["DB_PATH"]) as conn:
                 known = db.get_watched_file(conn, filename)
-                if known is not None and known["report_id"] is not None:
-                    old_report = db.get_report(conn, known["report_id"])
-                    if old_report is not None and (
-                        old_report["period_start"] != meta.period_start.isoformat()
-                        or old_report["period_end"] != meta.period_end.isoformat()
-                    ):
-                        return jsonify(
-                            error=f"This filename previously represented {old_report['period_start']} to "
-                            f"{old_report['period_end']}; this upload is for {meta.period_start} to "
-                            f"{meta.period_end}. That old report is still in the database — remove it on the "
-                            f"Reports page first if this new file is correct, then re-upload."
-                        ), 409
+                old_report = db.find_reused_filename_conflict(conn, known, meta)
+                if old_report is not None:
+                    return jsonify(
+                        error=f"This filename previously represented {old_report['period_start']} to "
+                        f"{old_report['period_end']}; this upload is for {meta.period_start} to "
+                        f"{meta.period_end}. That old report is still in the database — remove it on the "
+                        f"Reports page first if this new file is correct, then re-upload."
+                    ), 409
 
                 existing_report_id = db.period_exists(conn, meta)
                 if existing_report_id is not None and (known is None or known["report_id"] != existing_report_id):

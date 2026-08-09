@@ -5,19 +5,25 @@ from pathlib import Path
 
 import pandas as pd
 
-from .analysis import InventorySummary
+from .analysis import STATUS_ORDER, InventorySummary
 
-DISPLAY_COLUMNS = {
-    "brand": "Brand",
-    "sku": "SKU",
-    "opening_stock": "Opening Stock",
-    "purchase": "Purchase",
-    "sales": "Sold",
-    "closing_stock": "Closing Stock",
-    "value": "Value (Rs)",
-    "days_of_cover": "Days of Cover",
-    "days_since_activity": "Days Since Activity",
-}
+def _display_columns(trailing_days: int) -> dict[str, str]:
+    """Column labels for the exported sheets — same trailing-window
+    labeling as dashboard._table_columns (see analysis.summarize_history
+    for why Opening/Purchase/Sold share one window and Closing doesn't).
+    """
+    return {
+        "brand": "Brand",
+        "sku": "SKU",
+        "opening_stock": f"Opening Stock ({trailing_days}d)",
+        "purchase": f"Purchase ({trailing_days}d)",
+        "sales": f"Sold ({trailing_days}d)",
+        "closing_stock": "Closing Stock (now)",
+        "value": "Value (Rs)",
+        "days_of_cover": "Days of Cover",
+        "days_since_activity": "Days Since Activity",
+    }
+
 
 SHEETS = [
     ("out_of_stock", "Out of Stock"),
@@ -27,15 +33,14 @@ SHEETS = [
 ]
 
 
-def _prep(df: pd.DataFrame) -> pd.DataFrame:
-    d = df.rename(columns=DISPLAY_COLUMNS).copy()
+def _prep(df: pd.DataFrame, display_columns: dict[str, str]) -> pd.DataFrame:
+    d = df.rename(columns=display_columns).copy()
     if "Days of Cover" in d.columns:
         d["Days of Cover"] = d["Days of Cover"].replace(float("inf"), None)
     return d
 
 
 def _summary_frame(summary: InventorySummary) -> pd.DataFrame:
-    order = ["out_of_stock", "low_stock", "dead_stock", "overstock", "healthy"]
     labels = {
         "out_of_stock": "Out of Stock",
         "low_stock": "Low Stock",
@@ -49,7 +54,7 @@ def _summary_frame(summary: InventorySummary) -> pd.DataFrame:
             "SKUs": summary.status_counts.get(s, 0),
             "Value (Rs)": round(summary.status_values.get(s, 0.0), 2),
         }
-        for s in order
+        for s in STATUS_ORDER
     ]
     rows.append(
         {
@@ -66,6 +71,7 @@ def export_excel(summary: InventorySummary, out_path: str) -> Path:
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
 
+    display_columns = _display_columns(summary.meta.trailing_days)
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
         _summary_frame(summary).to_excel(writer, sheet_name="Summary", index=False)
 
@@ -76,7 +82,7 @@ def export_excel(summary: InventorySummary, out_path: str) -> Path:
             "overstock": summary.overstock,
         }
         for key, sheet_name in SHEETS:
-            _prep(lists[key]).to_excel(writer, sheet_name=sheet_name, index=False)
+            _prep(lists[key], display_columns).to_excel(writer, sheet_name=sheet_name, index=False)
 
         # Auto-fit column widths (approximate, based on header + longest value).
         for sheet_name in ["Summary"] + [name for _, name in SHEETS]:
