@@ -122,6 +122,21 @@ def cmd_dashboard(args: argparse.Namespace) -> None:
     _build_dashboard(args)
 
 
+def _bounded_days(value: str) -> int:
+    """argparse type= for the threshold flags — mirrors the 1-3650 bound the
+    web Settings page enforces (webapp.py's /api/settings), so a stray
+    ``--trailing-days 0`` fails fast with a clear error instead of silently
+    zeroing out daily_sales and misclassifying every SKU as dead/overstock.
+    """
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{value!r} is not a whole number")
+    if not (1 <= n <= 3650):
+        raise argparse.ArgumentTypeError(f"must be between 1 and 3650 days (got {n})")
+    return n
+
+
 def _resolve_thresholds(conn, args: argparse.Namespace) -> dict:
     """Persisted Settings values, with any explicitly-passed CLI flag as a
     one-off override for this run only (not written back to the DB) — so the
@@ -209,28 +224,28 @@ def _add_dashboard_args(p: argparse.ArgumentParser) -> None:
     )
     p.add_argument(
         "--trailing-days",
-        type=int,
+        type=_bounded_days,
         default=None,
         help="Minimum days of recent history to base the sales pace on "
         "(default: whatever's saved in Settings, or 90 if nothing's been saved)",
     )
     p.add_argument(
         "--dead-stock-days",
-        type=int,
+        type=_bounded_days,
         default=None,
         help="A SKU is dead stock once this many days have passed with no sales since its "
         "last purchase (default: whatever's saved in Settings, or 90 if nothing's been saved)",
     )
     p.add_argument(
         "--low-stock-days",
-        type=int,
+        type=_bounded_days,
         default=None,
         help="A SKU is low stock once its days-of-cover drops below this "
         "(default: whatever's saved in Settings, or 15 if nothing's been saved)",
     )
     p.add_argument(
         "--overstock-days",
-        type=int,
+        type=_bounded_days,
         default=None,
         help="A SKU is overstocked once its days-of-cover exceeds this "
         "(default: whatever's saved in Settings, or 90 if nothing's been saved)",

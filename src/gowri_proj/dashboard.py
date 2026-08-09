@@ -154,6 +154,15 @@ def build_payload(
             }
             for r in summary.top_skus_by_value.to_dict(orient="records")
         ],
+        "top_skus_by_sales": [
+            {
+                "label": f"{r['sku']} ({r['brand']})",
+                "brand": r["brand"],
+                "sku": r["sku"],
+                "value": round(r["sales"], 0),
+            }
+            for r in summary.top_skus_by_sales.to_dict(orient="records")
+        ],
         "tables": tables,
         "table_columns": TABLE_COLUMNS,
         "dead_stock_table_columns": DEAD_STOCK_TABLE_COLUMNS,

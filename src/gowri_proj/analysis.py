@@ -31,6 +31,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date
 
+import numpy as np
 import pandas as pd
 
 LOW_STOCK_DAYS = 15
@@ -81,7 +82,7 @@ def _compute_dead_stock(
     earliest_period_start: pd.Timestamp,
     dead_stock_days: int,
 ) -> pd.DataFrame:
-    """For every SKU in ``current_skus`` (brand, sku): is it dead stock?
+    """For every SKU in ``current_skus``: is it dead stock?
 
     Anchored to whichever is more recent — the last time it was *purchased*
     or the last time it *sold* — not a fixed trailing window shared by every
@@ -92,6 +93,17 @@ def _compute_dead_stock(
     dead; one restocked 4 months ago that still hasn't moved is; one that
     sold a handful of units right after being restocked a year ago but
     nothing since is dead once enough time has passed since *that* sale.
+
+    Keyed on ``sku`` alone, not ``(brand, sku)`` — the source export's brand
+    label for a SKU can (and, checked against real data, does) change over
+    time, e.g. a distributor renaming a division. Keying on the pair would
+    silently split one physical product's purchase/sale history in two at
+    the rename boundary, making a SKU that's actually moving fine look dead
+    just because its *old* label's activity isn't visible under the *new*
+    one. Confirmed safe on real data: no SKU has ever appeared under two
+    different brand labels within the *same* report period — every
+    multi-brand SKU is a rename over time, never a genuine simultaneous
+    collision between two unrelated products sharing a SKU string.
 
     Two things keep this bounded by *current catalog size*, not by however
     many months have ever been imported (see AGING_LOOKBACK_FLOOR_DAYS):
@@ -106,10 +118,10 @@ def _compute_dead_stock(
     lookback_cutoff = latest_period_end - pd.Timedelta(days=lookback_days)
     recent = all_entries[all_entries["period_end"] >= lookback_cutoff]
 
-    last_purchase_end = recent[recent["purchase"] > 0].groupby(["brand", "sku"])["period_end"].max()
-    last_sale_end = recent[recent["sales"] > 0].groupby(["brand", "sku"])["period_end"].max()
+    last_purchase_end = recent[recent["purchase"] > 0].groupby("sku")["period_end"].max()
+    last_sale_end = recent[recent["sales"] > 0].groupby("sku")["period_end"].max()
 
-    result = current_skus[["brand", "sku"]].drop_duplicates().set_index(["brand", "sku"])
+    result = current_skus[["sku"]].drop_duplicates().set_index("sku")
     result["last_purchase_end"] = last_purchase_end
     result["last_sale_end"] = last_sale_end
     result["last_activity_end"] = result[["last_purchase_end", "last_sale_end"]].max(axis=1)
@@ -232,7 +244,13 @@ def summarize_history(
     reports = (
         all_entries[["report_id", "period_start", "period_end", "period_days", "company", "location"]]
         .drop_duplicates("report_id")
-        .sort_values("period_end")
+        # Tiebroken on period_start too, not just period_end — the schema
+        # only enforces uniqueness on the (period_start, period_end) pair,
+        # not on period_end alone, and all_entries is deliberately fetched
+        # unordered from SQL for performance (see db.load_all_entries), so
+        # without this, which report counts as "latest" when two share a
+        # period_end would be non-deterministic across runs.
+        .sort_values(["period_end", "period_start"])
         .reset_index(drop=True)
     )
     latest = reports.iloc[-1]
@@ -244,11 +262,15 @@ def summarize_history(
     ].copy()
 
     # --- trailing sales rate (drives days-of-cover, low/overstock) ---
+    # Grouped by sku alone, not (brand, sku) — see _compute_dead_stock's
+    # docstring for why: a brand-label rename mid-window would otherwise
+    # silently drop the sales recorded under the old label, understating
+    # the sales pace for anything renamed within the trailing window.
     trailing_reports = _select_trailing_reports(reports, trailing_days_target)
     trailing_days = int(trailing_reports["period_days"].sum())
     trailing_entries = all_entries[all_entries["report_id"].isin(trailing_reports["report_id"])]
     trailing_sales = (
-        trailing_entries.groupby(["brand", "sku"])["sales"].sum().reset_index(name="trailing_sales")
+        trailing_entries.groupby("sku")["sales"].sum().reset_index(name="trailing_sales")
     )
 
     # --- dead stock: no sales since last purchase, independent of the trailing window above ---
@@ -256,19 +278,30 @@ def summarize_history(
         all_entries, current, latest["period_end"], reports.iloc[0]["period_start"], dead_stock_days
     )
 
-    merged = current.merge(trailing_sales, on=["brand", "sku"], how="left")
+    merged = current.merge(trailing_sales, on="sku", how="left")
     merged["trailing_sales"] = merged["trailing_sales"].fillna(0.0)
-    merged = merged.merge(dead_flags, on=["brand", "sku"], how="left")
+    merged = merged.merge(dead_flags, on="sku", how="left")
     merged["is_dead"] = merged["is_dead"].fillna(False)
     merged["days_since_activity"] = merged["days_since_activity"].fillna(0).astype(int)
     merged["daily_sales"] = merged["trailing_sales"] / trailing_days if trailing_days > 0 else 0.0
-    merged["days_of_cover"] = merged.apply(
-        lambda r: (r["closing_stock"] / r["daily_sales"]) if r["daily_sales"] > 0 else float("inf"),
-        axis=1,
+    # Vectorized rather than merged.apply(..., axis=1) — a row-wise Python
+    # loop over every current SKU (15k+ today) was the remaining hot spot
+    # in this module once _compute_dead_stock got bounded (see
+    # AGING_LOOKBACK_FLOOR_DAYS). np.select mirrors _status()'s if/elif
+    # chain exactly: conditions are checked in the same priority order,
+    # first match wins — keep the two in sync if either changes.
+    merged["days_of_cover"] = np.where(
+        merged["daily_sales"] > 0, merged["closing_stock"] / merged["daily_sales"], float("inf")
     )
-    merged["status"] = merged.apply(
-        lambda r: _status(r["closing_stock"], r["is_dead"], r["days_of_cover"], low_stock_days, overstock_days),
-        axis=1,
+    merged["status"] = np.select(
+        [
+            merged["closing_stock"] <= 0,
+            merged["is_dead"],
+            merged["days_of_cover"] < low_stock_days,
+            merged["days_of_cover"] > overstock_days,
+        ],
+        ["out_of_stock", "dead_stock", "low_stock", "overstock"],
+        default="healthy",
     )
     # Keep a "sales" alias so downstream table/column code matches the
     # trailing-window sales figure it displays (dead-stock classification
@@ -433,9 +466,15 @@ def find_import_gaps(reports: pd.DataFrame) -> dict:
     return {"missing_months": missing_months, "coverage_gaps": coverage_gaps}
 
 
-def sku_history(all_entries: pd.DataFrame, brand: str, sku: str) -> list[dict]:
-    """Every imported period's figures for one specific SKU, oldest first."""
-    rows = all_entries[(all_entries["brand"] == brand) & (all_entries["sku"] == sku)].sort_values("period_end")
+def sku_history(all_entries: pd.DataFrame, sku: str) -> list[dict]:
+    """Every imported period's figures for one specific SKU, oldest first.
+
+    Matched on ``sku`` alone, not brand — a SKU's brand label can change
+    over time (see _compute_dead_stock's docstring), and this should still
+    show its full history across that rename, not just what happened under
+    whichever brand label the caller passed in.
+    """
+    rows = all_entries[all_entries["sku"] == sku].sort_values("period_end")
     return [
         {
             "label": _period_label(r["period_start"].date(), r["period_end"].date()),

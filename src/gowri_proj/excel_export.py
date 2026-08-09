@@ -16,6 +16,7 @@ DISPLAY_COLUMNS = {
     "closing_stock": "Closing Stock",
     "value": "Value (Rs)",
     "days_of_cover": "Days of Cover",
+    "days_since_activity": "Days Since Activity",
 }
 
 SHEETS = [

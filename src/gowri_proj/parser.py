@@ -109,7 +109,7 @@ def parse_stock_statement(path: str) -> tuple[pd.DataFrame, ReportMeta]:
 
     rows: list[dict] = []
     current_brand: str | None = None
-    started = False  # becomes True once we've passed the "Opening Stock" header row
+    started = False  # becomes True once we've passed the header row
 
     for _, row in raw.iterrows():
         name = row[COL_NAME]
@@ -119,6 +119,22 @@ def parse_stock_statement(path: str) -> tuple[pd.DataFrame, ReportMeta]:
 
         if not started:
             if str(row[COL_OPENING]).strip() == "Opening Stock":
+                # COL_OPENING matching is necessary but not sufficient — the
+                # numeric columns are trusted by fixed position from here on
+                # (COL_SALES, COL_VALUE, etc.), so if the export template
+                # ever adds/reorders a column downstream of "Opening Stock",
+                # this one check would still pass while every number read
+                # after it is silently wrong (e.g. a "Sales" figure actually
+                # read from a "Free" column). Checking a couple more header
+                # cells catches that instead of parsing garbage quietly.
+                if str(row[COL_SALES]).strip() != "Sales" or str(row[COL_VALUE]).strip() != "Value":
+                    raise ValueError(
+                        "Found the 'Opening Stock' header but the other columns don't match the "
+                        f"expected layout (expected 'Sales' in column {COL_SALES + 1} and 'Value' in "
+                        f"column {COL_VALUE + 1}, got {row[COL_SALES]!r} and {row[COL_VALUE]!r}). "
+                        "The export template may have changed — check the file before re-importing, "
+                        "since the numbers would otherwise be read from the wrong columns silently."
+                    )
                 started = True
             continue
 

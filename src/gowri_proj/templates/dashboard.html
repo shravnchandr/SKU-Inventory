@@ -1,3 +1,12 @@
+{#
+  This is the Flask-rendered dashboard (server-backed: search, SKU/brand
+  drilldown modals, live settings). There is a second, standalone copy of
+  this UI at ../dashboard_template.html for the offline CLI export
+  (`main.py dashboard`) — it can't share Jinja/server routes so it
+  reimplements the same status blurbs, table sorting, and chart rendering
+  by hand. Nothing enforces parity between the two: a fix to a threshold
+  blurb, a rounding rule, or a table column here probably belongs in both.
+#}
 {% extends "base.html" %}
 {% block title %}Dashboard{% endblock %}
 
@@ -86,7 +95,7 @@
     <div class="status-list" id="status-list"></div>
   </div>
 
-  <div class="grid-2">
+  <div class="grid-3">
     <div class="card">
       <h2>Top brands by inventory value</h2>
       <div class="card-sub">Where locked-up capital concentrates.</div>
@@ -96,6 +105,11 @@
       <h2>Top SKUs by inventory value</h2>
       <div class="card-sub">Highest-value individual items on the shelf.</div>
       <div id="chart-skus"></div>
+    </div>
+    <div class="card">
+      <h2>Top SKUs by sales</h2>
+      <div class="card-sub">Highest-volume movers in the trailing window.</div>
+      <div id="chart-skus-sales"></div>
     </div>
   </div>
 
@@ -204,6 +218,7 @@ function renderBarChart(containerId, rows, valueFmt, onClick) {
 }
 renderBarChart('chart-brands', DATA.top_brands_by_value, fmtINR, r => openBrandDetail(r.brand));
 renderBarChart('chart-skus', DATA.top_skus_by_value, fmtINR, r => openSkuDetail(r.brand, r.sku));
+renderBarChart('chart-skus-sales', DATA.top_skus_by_sales, fmtNum, r => openSkuDetail(r.brand, r.sku));
 
 // ---------- trend section ----------
 (function () {

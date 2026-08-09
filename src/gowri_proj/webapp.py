@@ -159,10 +159,14 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
         all_entries, summary = get_current_data()
         if summary is None:
             return jsonify(error="No data imported yet."), 404
-        history = sku_history(all_entries, brand, sku)
+        history = sku_history(all_entries, sku)
         if not history:
             return jsonify(error="No history found for that SKU."), 404
-        current_rows = summary.enriched[(summary.enriched["brand"] == brand) & (summary.enriched["sku"] == sku)]
+        # Matched on sku alone, same reasoning as sku_history above — the
+        # brand query param reflects whatever label was current when the
+        # user clicked, which may be stale (e.g. a search result rendered
+        # before a rename lands in the next import).
+        current_rows = summary.enriched[summary.enriched["sku"] == sku]
         current = None
         if not current_rows.empty:
             row = current_rows.iloc[0]
@@ -173,7 +177,11 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
                 "days_of_cover": None if row["days_of_cover"] == float("inf") else round(float(row["days_of_cover"]), 1),
                 "status": row["status"],
             }
-        return jsonify(_sanitize({"brand": brand, "sku": sku, "current": current, "history": history}))
+        # Prefer the current snapshot's brand label over the query param —
+        # it's the freshest known label for this sku, and the query param
+        # may be stale (see the comment on current_rows above).
+        display_brand = current_rows.iloc[0]["brand"] if not current_rows.empty else brand
+        return jsonify(_sanitize({"brand": display_brand, "sku": sku, "current": current, "history": history}))
 
     @app.get("/api/brand-detail")
     def api_brand_detail():

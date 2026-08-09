@@ -1,3 +1,13 @@
+<!--
+  This is the standalone, dependency-free dashboard exported by `main.py
+  dashboard` (built by plain string substitution in dashboard.py, not
+  Jinja — no server, no drilldown modals, works offline as a single file).
+  There is a second copy of this UI at templates/dashboard.html for the
+  Flask-rendered app — it can't share this file's markup/JS since that one
+  needs Jinja and live API calls. Nothing enforces parity between the two:
+  a fix to a threshold blurb, a rounding rule, or a table column here
+  probably belongs in both.
+-->
 <!doctype html>
 <html lang="en">
 <head>
@@ -156,6 +166,10 @@
   .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
   @media (max-width: 860px) { .grid-2 { grid-template-columns: 1fr; } }
 
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+  @media (max-width: 1100px) { .grid-3 { grid-template-columns: 1fr 1fr; } }
+  @media (max-width: 640px) { .grid-3 { grid-template-columns: 1fr; } }
+
   .bar-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; }
   .bar-row .bar-label {
     width: 40%; flex: 0 0 40%; font-size: var(--text-base); color: var(--text-secondary);
@@ -284,7 +298,7 @@
     <div class="status-list" id="status-list"></div>
   </div>
 
-  <div class="grid-2">
+  <div class="grid-3">
     <div class="card">
       <h2>Top brands by inventory value</h2>
       <div class="card-sub">Where locked-up capital concentrates.</div>
@@ -294,6 +308,11 @@
       <h2>Top SKUs by inventory value</h2>
       <div class="card-sub">Highest-value individual items on the shelf.</div>
       <div id="chart-skus"></div>
+    </div>
+    <div class="card">
+      <h2>Top SKUs by sales</h2>
+      <div class="card-sub">Highest-volume movers in the trailing window.</div>
+      <div id="chart-skus-sales"></div>
     </div>
   </div>
 
@@ -439,6 +458,7 @@ function renderBarChart(containerId, rows, valueFmt) {
 }
 renderBarChart('chart-brands', DATA.top_brands_by_value, fmtINR);
 renderBarChart('chart-skus', DATA.top_skus_by_value, fmtINR);
+renderBarChart('chart-skus-sales', DATA.top_skus_by_sales, fmtNum);
 
 // ---------- line chart (trend series) ----------
 // A small self-contained SVG line chart: gridlines, one line per series,
