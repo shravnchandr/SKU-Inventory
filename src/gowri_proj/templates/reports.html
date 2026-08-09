@@ -1,0 +1,341 @@
+{% extends "base.html" %}
+{% block title %}Reports{% endblock %}
+
+{% block head %}
+<style>
+  .dropzone {
+    border: 2px dashed var(--border); border-radius: var(--radius-lg); padding: 36px 24px;
+    text-align: center; cursor: pointer; transition: border-color 0.12s, background 0.12s;
+  }
+  .dropzone:hover, .dropzone.drag-over { border-color: var(--accent); background: var(--page); }
+  .dropzone .dz-icon { font-size: 1.8rem; margin-bottom: 6px; }
+  .dropzone .dz-title { font-weight: 600; font-size: var(--text-md); margin-bottom: 4px; }
+  .dropzone .dz-sub { color: var(--text-muted); font-size: var(--text-sm); }
+  .dropzone input[type=file] { display: none; }
+
+  .upload-queue { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; }
+  .upload-item {
+    display: flex; align-items: center; gap: 10px; font-size: var(--text-base);
+    padding: 8px 12px; border-radius: var(--radius-sm); background: var(--page); border: 1px solid var(--border);
+  }
+  .upload-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .upload-item .status { color: var(--text-muted); flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+  .upload-item.ok .status { color: var(--status-good); }
+  .upload-item.warn .status { color: var(--status-warning); }
+  .upload-item.err .status { color: var(--status-critical); }
+
+  table.reports-table { width: 100%; border-collapse: collapse; font-size: var(--text-md); }
+  table.reports-table th, table.reports-table td { text-align: left; padding: 9px 10px; border-bottom: 1px solid var(--gridline); }
+  table.reports-table th { color: var(--text-muted); font-weight: 600; font-size: var(--text-sm); text-transform: uppercase; letter-spacing: 0.02em; }
+  table.reports-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  table.reports-table tbody tr:hover { background: var(--page); }
+  .empty-note { color: var(--text-muted); font-size: var(--text-md); padding: 24px; text-align: center; }
+
+  .onboarding { display: flex; flex-direction: column; align-items: center; text-align: center; gap: 6px; padding: 40px 20px; }
+  .onboarding h1 { margin: 0; font-size: 1.5rem; letter-spacing: -0.01em; }
+  .onboarding p { color: var(--text-secondary); max-width: 480px; margin: 0 0 14px; }
+
+  .health-row { display: flex; align-items: center; gap: 8px; font-size: var(--text-md); padding: 8px 0; border-bottom: 1px solid var(--gridline); }
+  .health-row:last-child { border-bottom: none; }
+  .health-row .icon { flex: 0 0 auto; }
+  .health-ok { color: var(--status-good); }
+  .health-warn { color: var(--status-warning); }
+  table.problem-files th, table.problem-files td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--gridline); font-size: var(--text-base); }
+  table.problem-files th { color: var(--text-muted); font-weight: 600; font-size: var(--text-xs); }
+</style>
+{% endblock %}
+
+{% block content %}
+  {% if not reports %}
+  <div class="card">
+    <div class="onboarding">
+      <h1>Welcome — let's import your first stock statement</h1>
+      <p>Drop your pharmacy's "Stock Statement" .xls/.xlsx export below. Everything stays on this computer.</p>
+    </div>
+    <div class="dropzone" id="dropzone">
+      <div class="dz-icon">📄</div>
+      <div class="dz-title">Drag a file here, or click to browse</div>
+      <div class="dz-sub">.xls or .xlsx — one file per reporting period</div>
+      <input type="file" id="file-input" multiple accept=".xls,.xlsx" />
+    </div>
+    <div class="upload-queue" id="upload-queue"></div>
+  </div>
+  {% else %}
+  <div class="page-head">
+    <div>
+      <h1>Reports</h1>
+      <div class="sub">{{ reports|length }} report{{ '' if reports|length == 1 else 's' }} imported · upload a new month below</div>
+    </div>
+    <div style="display:flex; gap:8px">
+      <button class="btn" id="refresh-btn" type="button">⟳ Rescan uploads folder</button>
+      <a class="btn btn-primary" href="{{ url_for('dashboard') }}">View dashboard →</a>
+    </div>
+  </div>
+
+  <div class="card" id="health-card">
+    <h2>Import health</h2>
+    <div class="card-sub" id="health-refresh"></div>
+    <div id="health-gaps"></div>
+    <div id="health-problems"></div>
+  </div>
+
+  <div class="card" id="quality-card" style="display:none; border-color: var(--status-warning)">
+    <h2>⚠ Data quality — <span id="quality-count"></span></h2>
+    <div class="card-sub">
+      Rows with impossible values in the imported files (e.g. positive stock with negative value, or
+      negative stock/sales) — not altered, just flagged so a bad export doesn't quietly skew totals or trends.
+    </div>
+    <div class="table-scroll" style="max-height:240px">
+      <table class="data-table">
+        <thead><tr><th>Period</th><th>Brand</th><th>SKU</th><th>Issue</th><th>Opening</th><th>Purchased</th><th>Sold</th><th>Closing</th><th>Value (₹)</th></tr></thead>
+        <tbody id="quality-tbody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Upload a new month</h2>
+    <div class="card-sub">One reporting period per file — ideally one calendar month, going forward.</div>
+    <div class="dropzone" id="dropzone">
+      <div class="dz-icon">📄</div>
+      <div class="dz-title">Drag a file here, or click to browse</div>
+      <div class="dz-sub">.xls or .xlsx</div>
+      <input type="file" id="file-input" multiple accept=".xls,.xlsx" />
+    </div>
+    <div class="upload-queue" id="upload-queue"></div>
+  </div>
+
+  <div class="card">
+    <h2>Imported reports</h2>
+    <div class="card-sub">The dashboard uses the most recent period for current stock, and recent periods for the sales-pace trend.</div>
+    <table class="reports-table" id="reports-table">
+      <thead>
+        <tr><th>Period</th><th class="num">Days</th><th class="num">SKUs</th><th>Source file</th><th>Imported</th><th></th></tr>
+      </thead>
+      <tbody id="reports-tbody"></tbody>
+    </table>
+  </div>
+  {% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script id="reports-data" type="application/json">{{ reports | tojson }}</script>
+<script>
+let REPORTS = JSON.parse(document.getElementById('reports-data').textContent);
+
+function fmtDate(iso) {
+  if (!iso) return '–';
+  const d = new Date(iso);
+  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+function fmtDateTime(iso) {
+  if (!iso) return '–';
+  return new Date(iso.replace(' ', 'T') + 'Z').toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+function renderReportsTable() {
+  const tbody = document.getElementById('reports-tbody');
+  if (!tbody) return;
+  tbody.innerHTML = REPORTS.map(r => `
+    <tr data-id="${r.id}">
+      <td>${fmtDate(r.period_start)} – ${fmtDate(r.period_end)}</td>
+      <td class="num">${r.period_days}</td>
+      <td class="num">${r.sku_count.toLocaleString('en-IN')}</td>
+      <td>${escapeHtml(r.source_filename || '–')}</td>
+      <td>${fmtDateTime(r.imported_at)}</td>
+      <td style="text-align:right"><button class="btn btn-sm btn-danger" data-remove="${r.id}" type="button">Remove</button></td>
+    </tr>
+  `).join('') || `<tr><td colspan="6" class="empty-note">Nothing imported yet.</td></tr>`;
+
+  tbody.querySelectorAll('[data-remove]').forEach(btn => {
+    btn.addEventListener('click', () => removeReport(Number(btn.dataset.remove)));
+  });
+}
+renderReportsTable();
+
+function fmtDateTimeLocal(iso) {
+  if (!iso) return null;
+  return new Date(iso.replace(' ', 'T') + 'Z').toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+}
+
+async function loadImportHealth() {
+  const healthCard = document.getElementById('health-card');
+  if (!healthCard) return;
+  try {
+    const data = await api('/api/import-health');
+    const refreshedAt = fmtDateTimeLocal(data.last_refresh);
+    document.getElementById('health-refresh').textContent = refreshedAt
+      ? `Last refresh: ${refreshedAt}`
+      : 'No refresh recorded yet — run a refresh (or upload a file) to start tracking this.';
+
+    const gapsEl = document.getElementById('health-gaps');
+    const hasGaps = data.missing_months.length || data.coverage_gaps.length;
+    if (!hasGaps) {
+      gapsEl.innerHTML = `<div class="health-row health-ok"><span class="icon">✓</span> No gaps — every month between your earliest and latest import is covered.</div>`;
+    } else {
+      const rows = [];
+      if (data.missing_months.length) {
+        rows.push(`<div class="health-row health-warn"><span class="icon">⚠</span> No report at all covers: ${escapeHtml(data.missing_months.join(', '))}</div>`);
+      }
+      data.coverage_gaps.forEach(g => {
+        rows.push(`<div class="health-row health-warn"><span class="icon">⚠</span> ${g.days}-day gap between reports: ${escapeHtml(g.gap_start)} to ${escapeHtml(g.gap_end)}</div>`);
+      });
+      gapsEl.innerHTML = rows.join('');
+    }
+
+    const problemsEl = document.getElementById('health-problems');
+    if (!data.problem_files.length) {
+      problemsEl.innerHTML = `<div class="health-row health-ok"><span class="icon">✓</span> No rejected files from the last scan.</div>`;
+    } else {
+      problemsEl.innerHTML = `
+        <div class="detail-section-title">Files rejected on the last scan</div>
+        <table class="problem-files" style="width:100%">
+          <thead><tr><th>File</th><th>Issue</th><th>Detail</th><th>When</th></tr></thead>
+          <tbody>${data.problem_files.map(p => `
+            <tr>
+              <td>${escapeHtml(p.filename)}</td>
+              <td><span class="status-badge" style="background:var(--status-serious)">${escapeHtml(p.status.replace(/_/g, ' '))}</span></td>
+              <td>${escapeHtml(p.detail || '–')}</td>
+              <td>${fmtDateTimeLocal(p.checked_at) || '–'}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`;
+    }
+  } catch (e) {
+    document.getElementById('health-refresh').textContent = `Couldn't load import health: ${e.message}`;
+  }
+}
+loadImportHealth();
+
+async function loadDataQuality() {
+  const card = document.getElementById('quality-card');
+  if (!card) return;
+  try {
+    const data = await api('/api/data-quality');
+    if (!data.issues.length) {
+      card.style.display = 'none';
+      return;
+    }
+    card.style.display = '';
+    document.getElementById('quality-count').textContent =
+      `${data.issues.length} issue${data.issues.length === 1 ? '' : 's'} found`;
+    document.getElementById('quality-tbody').innerHTML = data.issues.map(i => `
+      <tr>
+        <td style="text-align:left">${escapeHtml(i.period_label)}</td>
+        <td style="text-align:left">${escapeHtml(i.brand)}</td>
+        <td style="text-align:left">${escapeHtml(i.sku)}</td>
+        <td style="text-align:left;color:var(--status-critical)">${escapeHtml(i.issue)}</td>
+        <td>${fmtNum(i.opening_stock)}</td>
+        <td>${fmtNum(i.purchase)}</td>
+        <td>${fmtNum(i.sales)}</td>
+        <td>${fmtNum(i.closing_stock)}</td>
+        <td>${fmtINR(i.value)}</td>
+      </tr>`).join('');
+  } catch (e) {
+    card.style.display = 'none';
+  }
+}
+loadDataQuality();
+
+async function refreshReportsFromServer() {
+  const data = await api('/api/reports');
+  REPORTS = data.reports;
+  loadImportHealth();
+  loadDataQuality();
+  if (document.getElementById('reports-tbody')) {
+    renderReportsTable();
+  } else if (REPORTS.length) {
+    // We were on the empty onboarding state and now have data — reload the page shell.
+    window.location.reload();
+  }
+}
+
+async function removeReport(id) {
+  const report = REPORTS.find(r => r.id === id);
+  const label = report ? `${fmtDate(report.period_start)} – ${fmtDate(report.period_end)}` : `#${id}`;
+  const ok = await confirmDialog({
+    title: 'Remove this report?',
+    body: `This deletes the ${label} report and its SKU rows from the database. ` +
+      `If its source file is still in the uploads folder, the next rescan will re-import it — ` +
+      `delete or fix that file too if you don't want it back.`,
+    confirmLabel: 'Remove',
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await api(`/api/reports/${id}/remove`, { method: 'POST' });
+    toast('Report removed.', 'success');
+    await refreshReportsFromServer();
+  } catch (e) {
+    toast(e.message, 'error');
+  }
+}
+
+document.getElementById('refresh-btn')?.addEventListener('click', async (ev) => {
+  const btn = ev.currentTarget;
+  btn.disabled = true;
+  const original = btn.innerHTML;
+  btn.innerHTML = '<span class="spinner"></span> Scanning…';
+  try {
+    const data = await api('/api/refresh', { method: 'POST' });
+    const n = data.imported.length;
+    if (n > 0) {
+      toast(`Imported ${n} new report${n === 1 ? '' : 's'}.`, 'success');
+    } else if (data.errors.length) {
+      toast(`${data.errors.length} file(s) couldn't be read — check the uploads folder.`, 'error');
+    } else {
+      toast('Everything is already up to date.');
+    }
+    await refreshReportsFromServer();
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = original;
+  }
+});
+
+// ---------- upload (drag & drop + click to browse) ----------
+(function () {
+  const dz = document.getElementById('dropzone');
+  const input = document.getElementById('file-input');
+  const queue = document.getElementById('upload-queue');
+  if (!dz) return;
+
+  dz.addEventListener('click', () => input.click());
+  ['dragenter', 'dragover'].forEach(evt =>
+    dz.addEventListener(evt, e => { e.preventDefault(); dz.classList.add('drag-over'); })
+  );
+  ['dragleave', 'drop'].forEach(evt =>
+    dz.addEventListener(evt, e => { e.preventDefault(); dz.classList.remove('drag-over'); })
+  );
+  dz.addEventListener('drop', e => uploadFiles(e.dataTransfer.files));
+  input.addEventListener('change', () => { uploadFiles(input.files); input.value = ''; });
+
+  async function uploadFiles(fileList) {
+    const files = Array.from(fileList);
+    if (!files.length) return;
+    for (const file of files) {
+      const row = document.createElement('div');
+      row.className = 'upload-item';
+      row.innerHTML = `<span class="name">${escapeHtml(file.name)}</span><span class="status"><span class="spinner" style="border-top-color:var(--text-secondary);border-color:rgba(0,0,0,0.15)"></span> Uploading…</span>`;
+      queue.prepend(row);
+
+      const form = new FormData();
+      form.append('file', file);
+      try {
+        const data = await api('/api/upload', { method: 'POST', body: form });
+        row.classList.add('ok');
+        row.querySelector('.status').textContent = `✓ ${data.period_start} to ${data.period_end} · ${data.sku_count.toLocaleString('en-IN')} SKUs`;
+        toast(`Imported ${file.name}`, 'success');
+      } catch (e) {
+        row.classList.add('err');
+        row.querySelector('.status').textContent = `✗ ${e.message}`;
+        toast(`${file.name}: ${e.message}`, 'error');
+      }
+    }
+    await refreshReportsFromServer();
+  }
+})();
+</script>
+{% endblock %}

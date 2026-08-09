@@ -1,0 +1,813 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="csrf-token" content="{{ csrf_token }}" />
+<title>{% block title %}Inventory{% endblock %} — {{ company or "Inventory" }}</title>
+<style>
+  :root {
+    color-scheme: light;
+    --surface-1:      #fcfcfb;
+    --surface-2:      #f2f2ef;
+    --page:           #f9f9f7;
+    --text-primary:   #0b0b0b;
+    --text-secondary: #52514e;
+    --text-muted:     #898781;
+    --gridline:       #e1e0d9;
+    --baseline:       #c3c2b7;
+    --border:         rgba(11,11,11,0.10);
+    --series-1:       #2a78d6;
+    --series-2:       #eb6834;
+    --series-3:       #1baf7a;
+    --series-4:       #eda100;
+    --series-5:       #e87ba4;
+    --status-good:     #0ca30c;
+    --status-warning:  #fab219;
+    --status-serious:  #ec835a;
+    --status-critical: #d03b3b;
+
+    /* UI accent — deliberately separate from --series-1. The chart palette
+       is colorblind-validated and stays untouched; this is Apple's system
+       blue, used only for chrome (buttons, nav, links, focus rings). */
+    --accent:        #0071e3;
+    --accent-hover:  #0077ed;
+    --accent-active: #0068d1;
+
+    /* elevation — cards/modals/dropdowns use these instead of border-only definition */
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.06), 0 1px 1px rgba(0,0,0,0.04);
+    --shadow-md: 0 2px 8px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.05);
+    --shadow-lg: 0 8px 24px rgba(0,0,0,0.14), 0 2px 6px rgba(0,0,0,0.08);
+
+    /* radius scale */
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 14px;
+    --radius-pill: 999px;
+
+    /* type scale */
+    --text-xs: 0.72rem;
+    --text-sm: 0.78rem;
+    --text-base: 0.84rem;
+    --text-md: 0.92rem;
+    --text-lg: 1.05rem;
+    --text-xl: 1.4rem;
+
+    /* motion */
+    --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+    --transition-fast: 120ms var(--ease-standard);
+    --transition-base: 180ms var(--ease-standard);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:where(:not([data-theme="light"])) {
+      color-scheme: dark;
+      --surface-1:      #1a1a19;
+      --surface-2:      #232322;
+      --page:           #0d0d0d;
+      --text-primary:   #ffffff;
+      --text-secondary: #c3c2b7;
+      --text-muted:     #898781;
+      --gridline:       #2c2c2a;
+      --baseline:       #383835;
+      --border:         rgba(255,255,255,0.10);
+      --series-1:       #3987e5;
+      --series-2:       #d95926;
+      --series-3:       #199e70;
+      --series-4:       #c98500;
+      --series-5:       #d55181;
+      --status-good:     #0ca30c;
+      --status-warning:  #fab219;
+      --status-serious:  #ec835a;
+      --status-critical: #e66767;
+
+      --accent:        #0a84ff;
+      --accent-hover:  #2b95ff;
+      --accent-active: #0871db;
+
+      --shadow-sm: 0 1px 2px rgba(0,0,0,0.24), 0 1px 1px rgba(0,0,0,0.16);
+      --shadow-md: 0 2px 10px rgba(0,0,0,0.32), 0 1px 2px rgba(0,0,0,0.20);
+      --shadow-lg: 0 10px 30px rgba(0,0,0,0.45), 0 2px 8px rgba(0,0,0,0.28);
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --surface-1:      #1a1a19;
+    --surface-2:      #232322;
+    --page:           #0d0d0d;
+    --text-primary:   #ffffff;
+    --text-secondary: #c3c2b7;
+    --text-muted:     #898781;
+    --gridline:       #2c2c2a;
+    --baseline:       #383835;
+    --border:         rgba(255,255,255,0.10);
+    --series-1:       #3987e5;
+    --series-2:       #d95926;
+    --series-3:       #199e70;
+    --series-4:       #c98500;
+    --series-5:       #d55181;
+    --status-good:     #0ca30c;
+    --status-warning:  #fab219;
+    --status-serious:  #ec835a;
+    --status-critical: #e66767;
+
+    --accent:        #0a84ff;
+    --accent-hover:  #2b95ff;
+    --accent-active: #0871db;
+
+    --shadow-sm: 0 1px 2px rgba(0,0,0,0.24), 0 1px 1px rgba(0,0,0,0.16);
+    --shadow-md: 0 2px 10px rgba(0,0,0,0.32), 0 1px 2px rgba(0,0,0,0.20);
+    --shadow-lg: 0 10px 30px rgba(0,0,0,0.45), 0 2px 8px rgba(0,0,0,0.28);
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: var(--page);
+    color: var(--text-primary);
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  a { color: inherit; }
+
+  /* ---------- nav progress bar ---------- */
+  #nav-progress {
+    position: fixed; top: 0; left: 0; height: 2px; width: 0; background: var(--accent);
+    z-index: 200; opacity: 0; transition: width 0.4s ease-out, opacity 0.15s;
+  }
+
+  /* ---------- top nav ---------- */
+  .topbar {
+    position: sticky; top: 0; z-index: 20;
+    display: flex; align-items: center; gap: 20px;
+    padding: 12px 24px; background: var(--surface-1); border-bottom: 1px solid var(--border);
+    box-shadow: var(--shadow-sm);
+  }
+  .topbar .brand { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: var(--text-md); white-space: nowrap; }
+  .topbar .brand .dot { width: 9px; height: 9px; border-radius: 3px; background: var(--accent); flex: 0 0 auto; }
+  .topbar nav { display: flex; gap: 4px; flex: 1; }
+  .topbar nav a {
+    text-decoration: none; color: var(--text-secondary); font-size: var(--text-md); font-weight: 600;
+    padding: 7px 14px; border-radius: var(--radius-sm);
+    transition: background var(--transition-fast), color var(--transition-fast);
+  }
+  .topbar nav a:hover { background: var(--page); color: var(--text-primary); }
+  .topbar nav a.active { background: var(--accent); color: #fff; }
+  .theme-toggle {
+    display: inline-flex; align-items: center; gap: 6px;
+    border: 1px solid var(--border); background: var(--page); color: var(--text-secondary);
+    border-radius: var(--radius-sm); padding: 6px 10px; font-size: var(--text-sm); cursor: pointer; flex: 0 0 auto;
+    font-family: inherit; transition: color var(--transition-fast), background var(--transition-fast);
+  }
+  .theme-toggle:hover { color: var(--text-primary); }
+
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 20px; }
+
+  .page-head { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px; }
+  .page-head h1 { margin: 0 0 4px; font-size: var(--text-xl); letter-spacing: -0.01em; }
+  .page-head .sub { color: var(--text-secondary); font-size: var(--text-md); }
+
+  .card {
+    background: var(--surface-1);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-sm);
+    padding: 18px 20px;
+    transition: box-shadow var(--transition-base);
+  }
+  .card h2 { margin: 0 0 4px; font-size: var(--text-md); }
+  .card .card-sub { color: var(--text-secondary); font-size: var(--text-base); margin-bottom: 14px; }
+
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 860px) { .grid-2 { grid-template-columns: 1fr; } }
+
+  /* ---------- buttons ---------- */
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border);
+    background: var(--page); color: var(--text-primary); border-radius: var(--radius-sm); padding: 8px 14px;
+    font-size: var(--text-base); font-weight: 600; cursor: pointer; font-family: inherit;
+    transition: background var(--transition-fast), border-color var(--transition-fast),
+                box-shadow var(--transition-fast), transform var(--transition-fast);
+  }
+  .btn:hover { background: var(--surface-2); }
+  .btn:active { transform: scale(0.97); }
+  .btn:disabled { opacity: 0.55; cursor: default; }
+  .btn-primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+  .btn-primary:active { background: var(--accent-active); border-color: var(--accent-active); }
+  .btn-danger { background: transparent; border-color: var(--status-critical); color: var(--status-critical); }
+  .btn-danger:hover { background: var(--status-critical); color: #fff; }
+  .btn-sm { padding: 5px 10px; font-size: var(--text-sm); }
+
+  /* ---------- toast ---------- */
+  #toast-root { position: fixed; bottom: 20px; right: 20px; z-index: 100; display: flex; flex-direction: column; gap: 8px; }
+  .toast {
+    background: var(--text-primary); color: var(--surface-1); padding: 11px 16px; border-radius: var(--radius-md);
+    font-size: var(--text-base); box-shadow: var(--shadow-md); max-width: 340px;
+    display: flex; align-items: center; gap: 8px; animation: toast-in 0.15s ease-out;
+  }
+  .toast.error { background: var(--status-critical); }
+  .toast.success { background: var(--status-good); }
+  @keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+
+  /* ---------- modal ---------- */
+  .modal-backdrop {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.45); z-index: 90;
+    display: flex; align-items: center; justify-content: center; padding: 20px;
+  }
+  .modal {
+    background: var(--surface-1); border-radius: var(--radius-lg); padding: 22px 24px;
+    max-width: 420px; width: 100%; border: 1px solid var(--border); box-shadow: var(--shadow-lg);
+  }
+  .modal h3 { margin: 0 0 8px; font-size: var(--text-lg); }
+  .modal p { margin: 0 0 18px; color: var(--text-secondary); font-size: var(--text-md); line-height: 1.5; }
+  .modal .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .modal.modal-lg { max-width: 680px; max-height: 82vh; overflow-y: auto; position: relative; padding-top: 44px; }
+  .modal-close {
+    position: absolute; top: 14px; right: 14px; width: 28px; height: 28px; border-radius: var(--radius-sm);
+    border: 1px solid var(--border); background: var(--page); color: var(--text-secondary);
+    cursor: pointer; font-size: var(--text-md); line-height: 1; display: flex; align-items: center; justify-content: center;
+    transition: background var(--transition-fast), color var(--transition-fast);
+  }
+  .modal-close:hover { color: var(--text-primary); background: var(--surface-2); }
+  .modal-loading, .modal-error {
+    display: flex; align-items: center; gap: 10px; color: var(--text-muted); font-size: var(--text-base); padding: 30px 4px;
+  }
+  .modal-error { color: var(--status-critical); }
+
+  /* ---------- spinner ---------- */
+  .spinner {
+    width: 14px; height: 14px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.4);
+    border-top-color: #fff; animation: spin 0.7s linear infinite; display: inline-block;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  footer.app-footer { color: var(--text-muted); font-size: var(--text-xs); text-align: center; padding: 8px 0 20px; }
+
+  /* ---------- topbar search ---------- */
+  .topbar-search { position: relative; flex: 0 1 260px; }
+  .topbar-search input {
+    width: 100%; background: var(--page); border: 1px solid var(--border); color: var(--text-primary);
+    border-radius: var(--radius-sm); padding: 7px 10px; font-size: var(--text-base); font-family: inherit;
+  }
+  .search-results {
+    position: absolute; top: calc(100% + 6px); left: 0; right: 0; max-height: 360px; overflow-y: auto;
+    background: var(--surface-1); border: 1px solid var(--border); border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md); z-index: 50; display: none;
+  }
+  .search-results.open { display: block; }
+  .search-result-item {
+    display: flex; justify-content: space-between; align-items: center; gap: 10px;
+    padding: 9px 12px; cursor: pointer; border-bottom: 1px solid var(--gridline); font-size: var(--text-base);
+  }
+  .search-result-item:last-child { border-bottom: none; }
+  .search-result-item:hover, .search-result-item.active { background: var(--page); }
+  .search-result-item .sr-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .search-result-item .sr-brand { color: var(--text-muted); font-size: var(--text-xs); }
+  .search-result-item .sr-value { flex: 0 0 auto; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+  .search-empty, .search-hint { padding: 12px; color: var(--text-muted); font-size: var(--text-sm); }
+
+  /* ---------- shared focus ring ---------- */
+  input:focus-visible {
+    outline: 2px solid var(--accent); outline-offset: 1px;
+    transition: outline-color var(--transition-fast);
+  }
+
+  /* ---------- shared detail-modal & chart primitives (used by search results, ---------- */
+  /* dashboard drill-downs — anything that opens a SKU/brand detail panel) */
+  .trend-empty { color: var(--text-muted); font-size: var(--text-base); padding: 20px 0; }
+  .chart-title { font-size: var(--text-base); color: var(--text-secondary); font-weight: 600; margin-bottom: 8px; }
+  .line-chart-wrap { position: relative; }
+  .line-chart-wrap svg { width: 100%; height: auto; display: block; overflow: visible; }
+  .lc-gridline { stroke: var(--gridline); stroke-width: 1; }
+  .lc-axis-label { fill: var(--text-muted); font-size: 9px; }
+  .lc-line { fill: none; stroke-width: 2; }
+  .lc-dot { stroke-width: 2; stroke: var(--surface-1); }
+  .lc-crosshair { stroke: var(--baseline); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0; pointer-events: none; }
+  .lc-hit { fill: transparent; }
+  .lc-legend { display: flex; flex-wrap: wrap; gap: 10px 16px; margin-bottom: 10px; }
+  .lc-legend-item { display: flex; align-items: center; gap: 6px; font-size: var(--text-sm); color: var(--text-secondary); }
+  .lc-legend-swatch { width: 10px; height: 2px; border-radius: 1px; }
+  .lc-legend-clickable { cursor: pointer; border-radius: 5px; padding: 2px 5px; margin: -2px -5px; transition: background var(--transition-fast), color var(--transition-fast); }
+  .lc-legend-clickable:hover, .lc-legend-clickable:focus-visible { background: var(--page); color: var(--text-primary); }
+  .lc-legend-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .lc-tooltip {
+    position: absolute; background: var(--text-primary); color: var(--surface-1);
+    font-size: var(--text-sm); padding: 6px 10px; border-radius: var(--radius-sm); pointer-events: none;
+    opacity: 0; transition: opacity 0.1s; white-space: nowrap; z-index: 6; transform: translate(-50%, -110%);
+  }
+  .lc-tooltip .lc-tt-row { display: flex; align-items: center; gap: 6px; }
+  .lc-tooltip .lc-tt-swatch { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
+
+  .detail-eyebrow { color: var(--text-muted); font-size: var(--text-sm); margin-bottom: 2px; }
+  .detail-title { font-size: var(--text-lg); font-weight: 700; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; letter-spacing: -0.005em; }
+  .status-badge { font-size: var(--text-xs); font-weight: 600; padding: 3px 9px; border-radius: var(--radius-pill); color: #fff; display: inline-block; }
+  .detail-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 18px; }
+  .detail-section-title { font-size: var(--text-base); font-weight: 600; color: var(--text-secondary); margin: 18px 0 8px; }
+
+  /* ---------- shared stat tile ---------- */
+  /* Replaces what used to be three near-identical implementations
+     (kpi-tile, aging-tile, detail-kpi) — one component, used everywhere a
+     small labeled number needs a card of its own. */
+  .stat-tile {
+    background: var(--page); border: 1px solid var(--border);
+    border-radius: var(--radius-md); padding: 10px 12px;
+    transition: box-shadow var(--transition-base);
+  }
+  .stat-tile .label { font-size: var(--text-xs); color: var(--text-muted); margin-bottom: 3px; }
+  .stat-tile .value { font-size: var(--text-lg); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .stat-tile .sub { font-size: var(--text-xs); color: var(--text-secondary); }
+  .stat-tile.stat-tile-lg {
+    background: var(--surface-1); border-radius: var(--radius-lg);
+    padding: 16px 18px; box-shadow: var(--shadow-sm);
+  }
+  .stat-tile.stat-tile-lg .label { font-size: var(--text-sm); margin-bottom: 6px; }
+  .stat-tile.stat-tile-lg .value { font-size: 1.6rem; letter-spacing: -0.01em; }
+
+  .table-scroll { max-height: 420px; overflow: auto; border: 1px solid var(--gridline); border-radius: var(--radius-md); }
+  table.data-table { width: 100%; border-collapse: collapse; font-size: var(--text-base); }
+  table.data-table th, table.data-table td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--gridline); }
+  table.data-table th:nth-child(1), table.data-table td:nth-child(1),
+  table.data-table th:nth-child(2), table.data-table td:nth-child(2) { text-align: left; }
+  table.data-table td { font-variant-numeric: tabular-nums; color: var(--text-primary); }
+  table.data-table th {
+    color: var(--text-muted); font-weight: 600; cursor: pointer; user-select: none;
+    position: sticky; top: 0; background: var(--surface-1);
+  }
+  table.data-table th.sorted::after { content: " " attr(data-dir); font-size: 0.7em; }
+  table.data-table tbody tr:hover { background: var(--page); }
+  table.data-table tbody tr.row-clickable { cursor: pointer; }
+</style>
+{% block head %}{% endblock %}
+</head>
+<body>
+  <div id="nav-progress"></div>
+  <div class="topbar">
+    <div class="brand"><span class="dot"></span>{{ company or "Inventory" }}</div>
+    <nav>
+      <a href="{{ url_for('dashboard') }}" class="{{ 'active' if active_page == 'dashboard' else '' }}">Dashboard</a>
+      <a href="{{ url_for('reports') }}" class="{{ 'active' if active_page == 'reports' else '' }}">Reports</a>
+      <a href="{{ url_for('settings') }}" class="{{ 'active' if active_page == 'settings' else '' }}">Settings</a>
+    </nav>
+    <div class="topbar-search">
+      <input type="search" id="global-search" placeholder="Search any SKU or brand…" autocomplete="off" />
+      <div class="search-results" id="search-results"></div>
+    </div>
+    <button class="theme-toggle" id="theme-toggle" type="button" aria-pressed="false">
+      <span id="theme-toggle-icon" aria-hidden="true">🌙</span>
+      <span id="theme-toggle-label">Dark</span>
+    </button>
+  </div>
+
+  <div class="wrap">
+    {% block content %}{% endblock %}
+  </div>
+
+  <footer class="app-footer">{% block footer %}Runs entirely on this device — nothing leaves your computer.{% endblock %}</footer>
+  <div id="toast-root"></div>
+
+<script>
+// ---------- theme toggle ----------
+// localStorage can throw on some browsers/origins — degrade to in-memory rather
+// than letting that break the whole page.
+(function () {
+  const btn = document.getElementById('theme-toggle');
+  const icon = document.getElementById('theme-toggle-icon');
+  const label = document.getElementById('theme-toggle-label');
+  const safeStorage = {
+    get(key) { try { return localStorage.getItem(key); } catch (e) { return null; } },
+    set(key, val) { try { localStorage.setItem(key, val); } catch (e) { /* ignore */ } },
+  };
+  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const stored = safeStorage.get('inv-theme');
+  if (stored) document.documentElement.setAttribute('data-theme', stored);
+
+  function isDark() {
+    return (document.documentElement.getAttribute('data-theme') || (prefersDark ? 'dark' : 'light')) === 'dark';
+  }
+  function sync() {
+    const dark = isDark();
+    // The button offers to *switch to* the other mode, so its own icon/label is the opposite of current.
+    icon.textContent = dark ? '☀️' : '🌙';
+    label.textContent = dark ? 'Light' : 'Dark';
+    btn.setAttribute('aria-pressed', String(dark));
+  }
+  sync();
+  btn.addEventListener('click', () => {
+    const cur = isDark() ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', cur);
+    safeStorage.set('inv-theme', cur);
+    sync();
+  });
+})();
+
+// ---------- nav progress bar ----------
+// Full-page navigations (Dashboard <-> Reports, "View dashboard" etc.) have a
+// real network round-trip with nothing on screen to show for it — this gives
+// instant feedback the click registered, rather than a static page.
+(function () {
+  const bar = document.getElementById('nav-progress');
+  function start() {
+    bar.style.transition = 'none';
+    bar.style.width = '0%';
+    bar.style.opacity = '1';
+    requestAnimationFrame(() => {
+      bar.style.transition = 'width 0.4s ease-out, opacity 0.15s';
+      bar.style.width = '72%';
+    });
+  }
+  document.addEventListener('click', e => {
+    const a = e.target.closest('a[href]');
+    if (!a || e.defaultPrevented || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    if (a.target === '_blank' || a.hasAttribute('download')) return;
+    const href = a.getAttribute('href');
+    if (!href || href.startsWith('#') || href.startsWith('javascript:')) return;
+    start();
+  });
+  window.addEventListener('beforeunload', start);
+})();
+
+// ---------- toast ----------
+function toast(message, kind) {
+  const root = document.getElementById('toast-root');
+  const el = document.createElement('div');
+  el.className = 'toast' + (kind ? ' ' + kind : '');
+  el.textContent = message;
+  root.appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.25s'; setTimeout(() => el.remove(), 260); }, 3400);
+}
+
+// ---------- confirm modal ----------
+function confirmDialog({ title, body, confirmLabel, danger }) {
+  return new Promise(resolve => {
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal-backdrop';
+    // Escaped unconditionally — every current caller only ever passes plain
+    // text (occasionally with interpolated data like a report's date range),
+    // and there's no legitimate reason for a confirm dialog to need markup.
+    // Escaping here once means a future caller can't reintroduce this class
+    // of bug by forgetting to.
+    backdrop.innerHTML = `
+      <div class="modal">
+        <h3>${escapeHtml(title)}</h3>
+        <p>${escapeHtml(body)}</p>
+        <div class="modal-actions">
+          <button class="btn" data-act="cancel" type="button">Cancel</button>
+          <button class="btn ${danger ? 'btn-danger' : 'btn-primary'}" data-act="ok" type="button">${escapeHtml(confirmLabel || 'Confirm')}</button>
+        </div>
+      </div>`;
+    document.body.appendChild(backdrop);
+    function close(result) { backdrop.remove(); resolve(result); }
+    backdrop.addEventListener('click', e => { if (e.target === backdrop) close(false); });
+    backdrop.querySelector('[data-act="cancel"]').addEventListener('click', () => close(false));
+    backdrop.querySelector('[data-act="ok"]').addEventListener('click', () => close(true));
+  });
+}
+
+// ---------- generic detail modal ----------
+// Opens immediately with a spinner, then hands the body element to `renderFn`
+// (async — typically fetches then fills in HTML). Errors render inline
+// instead of failing silently.
+function openModal(renderFn) {
+  const backdrop = document.createElement('div');
+  backdrop.className = 'modal-backdrop';
+  backdrop.innerHTML = `
+    <div class="modal modal-lg">
+      <button class="modal-close" type="button" aria-label="Close">✕</button>
+      <div class="modal-body"><div class="modal-loading"><span class="spinner" style="border-top-color:var(--text-primary);border-color:rgba(120,120,120,.3)"></span> Loading…</div></div>
+    </div>`;
+  document.body.appendChild(backdrop);
+  function close() { backdrop.remove(); document.removeEventListener('keydown', onKey); }
+  function onKey(e) { if (e.key === 'Escape') close(); }
+  document.addEventListener('keydown', onKey);
+  backdrop.addEventListener('click', e => { if (e.target === backdrop) close(); });
+  backdrop.querySelector('.modal-close').addEventListener('click', close);
+  const body = backdrop.querySelector('.modal-body');
+  Promise.resolve(renderFn(body, close)).catch(err => {
+    body.innerHTML = `<div class="modal-error">Couldn't load details — ${err.message}</div>`;
+  });
+  return { close, body };
+}
+
+// ---------- fetch helper ----------
+// Every mutating request carries the per-process CSRF token (see meta tag
+// above) so a page from some other site open in the same browser can't
+// drive this local server — plain cross-origin form submissions can't set
+// custom headers, so requiring this one is enough to block that.
+const CSRF_TOKEN = document.querySelector('meta[name="csrf-token"]')?.content || '';
+async function api(url, opts) {
+  opts = opts || {};
+  const headers = new Headers(opts.headers || {});
+  headers.set('X-CSRF-Token', CSRF_TOKEN);
+  const res = await fetch(url, { ...opts, headers });
+  let body = null;
+  try { body = await res.json(); } catch (e) { /* no body */ }
+  if (!res.ok) {
+    throw new Error((body && body.error) || `Request failed (${res.status})`);
+  }
+  return body;
+}
+
+// ---------- escaping untrusted text ----------
+// Brand/SKU/filename strings come from uploaded spreadsheets — never trust
+// them when building HTML with template strings + innerHTML.
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  }[c]));
+}
+
+// ---------- shared formatters ----------
+const fmtINR = n => '₹' + Number(n).toLocaleString('en-IN', {maximumFractionDigits: 0});
+const fmtNum = n => Number(n).toLocaleString('en-IN', {maximumFractionDigits: 0});
+
+// ---------- status badge (used by search results + SKU/brand detail panels) ----------
+// Hardcoded rather than derived from a page's embedded data — this needs to
+// work on every page (Reports, Settings), not just the Dashboard, since the
+// global search box lives in the shared topbar.
+const STATUS_META = {
+  out_of_stock: { label: 'Out of stock', color_var: '--status-critical' },
+  dead_stock: { label: 'Dead stock', color_var: '--status-serious' },
+  low_stock: { label: 'Low stock', color_var: '--status-warning' },
+  overstock: { label: 'Overstock', color_var: '--series-1' },
+  healthy: { label: 'Healthy', color_var: '--status-good' },
+};
+function statusBadgeHtml(status) {
+  const meta = STATUS_META[status];
+  if (!meta) return '';
+  const color = getComputedStyle(document.documentElement).getPropertyValue(meta.color_var).trim();
+  return `<span class="status-badge" style="background:${color}">${meta.label}</span>`;
+}
+
+// ---------- line chart (trend series) ----------
+// A small self-contained SVG line chart: gridlines, one line per series,
+// direct-labeled legend for 2+ series, and a shared crosshair + tooltip on hover.
+function renderLineChart(containerId, { labels, series, yFormat, showLegend, onLegendClick }) {
+  const el = document.getElementById(containerId);
+  const W = 560, H = 220;
+  const pad = { top: 14, right: 16, bottom: 28, left: 54 };
+  const plotW = W - pad.left - pad.right;
+  const plotH = H - pad.top - pad.bottom;
+  const n = labels.length;
+
+  const maxVal = Math.max(1, ...series.flatMap(s => s.values.map(v => v || 0)));
+  const yMax = maxVal * 1.15;
+  const xAt = i => (n <= 1 ? plotW / 2 : (i / (n - 1)) * plotW) + pad.left;
+  const yAt = v => pad.top + plotH - (Math.max(0, v || 0) / yMax) * plotH;
+
+  const gridCount = 4;
+  const gridlines = Array.from({ length: gridCount + 1 }, (_, i) => {
+    const v = (yMax / gridCount) * i;
+    const y = yAt(v);
+    return `<line class="lc-gridline" x1="${pad.left}" x2="${W - pad.right}" y1="${y}" y2="${y}" />` +
+      `<text class="lc-axis-label" x="${pad.left - 8}" y="${y + 3}" text-anchor="end">${yFormat(v)}</text>`;
+  }).join('');
+
+  const labelStep = n > 7 ? Math.ceil(n / 7) : 1;
+  const xLabels = labels.map((lab, i) => {
+    if (i % labelStep !== 0 && i !== n - 1) return '';
+    return `<text class="lc-axis-label" x="${xAt(i)}" y="${H - 8}" text-anchor="middle">${lab}</text>`;
+  }).join('');
+
+  const lines = series.map(s => {
+    const d = s.values.map((v, i) => `${i === 0 ? 'M' : 'L'} ${xAt(i)} ${yAt(v)}`).join(' ');
+    const dots = s.values.map((v, i) =>
+      `<circle class="lc-dot" cx="${xAt(i)}" cy="${yAt(v)}" r="4" fill="${s.color}" />`
+    ).join('');
+    return `<path class="lc-line" d="${d}" stroke="${s.color}" /><g data-series="${escapeHtml(s.name)}">${dots}</g>`;
+  }).join('');
+
+  const legend = showLegend
+    ? `<div class="lc-legend">${series.map((s, i) =>
+        `<div class="lc-legend-item${onLegendClick ? ' lc-legend-clickable' : ''}" ${onLegendClick ? `data-idx="${i}" tabindex="0" role="button"` : ''}>` +
+        `<span class="lc-legend-swatch" style="background:${s.color}"></span>${escapeHtml(s.name)}</div>`
+      ).join('')}</div>`
+    : '';
+
+  el.innerHTML = `
+    ${legend}
+    <div class="line-chart-wrap">
+      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+        ${gridlines}
+        ${xLabels}
+        ${lines}
+        <line class="lc-crosshair" id="${containerId}-cross" x1="0" x2="0" y1="${pad.top}" y2="${pad.top + plotH}" />
+        <rect class="lc-hit" x="${pad.left}" y="${pad.top}" width="${plotW}" height="${plotH}"
+              data-chart="${containerId}" />
+      </svg>
+      <div class="lc-tooltip" id="${containerId}-tip"></div>
+    </div>`;
+
+  const svg = el.querySelector('svg');
+  const hit = el.querySelector('.lc-hit');
+  const cross = el.querySelector(`#${CSS.escape(containerId)}-cross`);
+  const tip = el.querySelector(`#${CSS.escape(containerId)}-tip`);
+
+  if (onLegendClick) {
+    el.querySelectorAll('.lc-legend-clickable').forEach(item => {
+      const handler = () => onLegendClick(series[Number(item.dataset.idx)]);
+      item.addEventListener('click', handler);
+      item.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); } });
+    });
+  }
+
+  function showAt(i) {
+    const x = xAt(i);
+    cross.setAttribute('x1', x);
+    cross.setAttribute('x2', x);
+    cross.style.opacity = 1;
+    tip.innerHTML = `<div style="font-weight:600;margin-bottom:4px">${escapeHtml(labels[i])}</div>` +
+      series.map(s => `<div class="lc-tt-row"><span class="lc-tt-swatch" style="background:${s.color}"></span>${s.name ? escapeHtml(s.name) + ': ' : ''}${yFormat(s.values[i])}</div>`).join('');
+    const rect = svg.getBoundingClientRect();
+    const scale = rect.width / W;
+    tip.style.left = `${x * scale}px`;
+    tip.style.top = `${yAt(Math.max(...series.map(s => s.values[i] || 0))) * scale}px`;
+    tip.style.opacity = 1;
+  }
+  function hide() {
+    cross.style.opacity = 0;
+    tip.style.opacity = 0;
+  }
+  hit.addEventListener('mousemove', ev => {
+    const rect = svg.getBoundingClientRect();
+    const scale = W / rect.width;
+    const localX = (ev.clientX - rect.left) * scale - pad.left;
+    const i = n <= 1 ? 0 : Math.round((localX / plotW) * (n - 1));
+    showAt(Math.min(n - 1, Math.max(0, i)));
+  });
+  hit.addEventListener('mouseleave', hide);
+}
+
+// ---------- SKU / brand detail panels ----------
+// Fetch from the server (/api/sku-detail, /api/brand-detail) — not scoped to
+// any one page's embedded data, so these work from anywhere: the dashboard's
+// charts/tables, or a global search result on any page.
+function openSkuDetail(brand, sku) {
+  openModal(async body => {
+    const data = await api(`/api/sku-detail?brand=${encodeURIComponent(brand)}&sku=${encodeURIComponent(sku)}`);
+    const c = data.current;
+    const kpis = c
+      ? `
+        <div class="detail-kpis">
+          <div class="stat-tile"><div class="label">Closing stock</div><div class="value">${fmtNum(c.closing_stock)}</div></div>
+          <div class="stat-tile"><div class="label">Value</div><div class="value">${fmtINR(c.value)}</div></div>
+          <div class="stat-tile"><div class="label">Sold (trailing)</div><div class="value">${fmtNum(c.sales)}</div></div>
+          <div class="stat-tile"><div class="label">Days of cover</div><div class="value">${c.days_of_cover === null ? '∞' : fmtNum(c.days_of_cover)}</div></div>
+        </div>`
+      : `<div class="detail-kpis"><div class="stat-tile" style="grid-column:1/-1"><div class="label">Not in the most recent import</div><div class="value" style="font-size:var(--text-base);font-weight:400">Shown below is its history from earlier reports.</div></div></div>`;
+
+    body.innerHTML = `
+      <div class="detail-eyebrow">${escapeHtml(brand)}</div>
+      <div class="detail-title">${escapeHtml(sku)} ${c ? statusBadgeHtml(c.status) : ''}</div>
+      ${kpis}
+      <div class="detail-section-title">Stock &amp; sales over time</div>
+      <div id="sku-detail-chart"></div>
+      <div class="detail-section-title">By period</div>
+      <div class="table-scroll" style="max-height:220px">
+        <table class="data-table">
+          <thead><tr><th>Period</th><th>Opening</th><th>Purchased</th><th>Sold</th><th>Closing</th><th>Value (₹)</th></tr></thead>
+          <tbody>${data.history.slice().reverse().map(h => `
+            <tr>
+              <td style="text-align:left">${escapeHtml(h.label)}</td>
+              <td>${fmtNum(h.opening_stock)}</td>
+              <td>${fmtNum(h.purchase)}</td>
+              <td>${fmtNum(h.sales)}</td>
+              <td>${fmtNum(h.closing_stock)}</td>
+              <td>${fmtINR(h.value)}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+
+    if (data.history.length >= 2) {
+      const color = getComputedStyle(document.documentElement).getPropertyValue('--series-1').trim();
+      renderLineChart('sku-detail-chart', {
+        labels: data.history.map(h => h.label),
+        series: [{ name: 'Closing stock', color, values: data.history.map(h => h.closing_stock) }],
+        yFormat: fmtNum,
+        showLegend: false,
+      });
+    } else {
+      document.getElementById('sku-detail-chart').innerHTML =
+        `<div class="trend-empty">Only one period of history for this SKU so far.</div>`;
+    }
+  });
+}
+
+function openBrandDetail(brand) {
+  openModal(async body => {
+    const data = await api(`/api/brand-detail?brand=${encodeURIComponent(brand)}`);
+    const c = data.current;
+    body.innerHTML = `
+      <div class="detail-eyebrow">Brand</div>
+      <div class="detail-title">${escapeHtml(brand)}</div>
+      <div class="detail-kpis">
+        <div class="stat-tile"><div class="label">SKUs</div><div class="value">${fmtNum(c.sku_count)}</div></div>
+        <div class="stat-tile"><div class="label">Inventory value</div><div class="value">${fmtINR(c.total_value)}</div></div>
+        <div class="stat-tile"><div class="label">Units on hand</div><div class="value">${fmtNum(c.total_closing_stock)}</div></div>
+      </div>
+      <div class="detail-section-title">Units sold over time</div>
+      <div id="brand-detail-chart"></div>
+      <div class="detail-section-title">SKUs in this brand</div>
+      <div class="table-scroll" style="max-height:260px">
+        <table class="data-table">
+          <thead><tr><th>SKU</th><th></th><th>Closing</th><th>Value (₹)</th></tr></thead>
+          <tbody>${data.skus.map(s => `
+            <tr class="row-clickable" data-sku="${escapeHtml(s.sku)}">
+              <td style="text-align:left">${escapeHtml(s.sku)}</td>
+              <td style="text-align:left">${statusBadgeHtml(s.status)}</td>
+              <td>${fmtNum(s.closing_stock)}</td>
+              <td>${fmtINR(s.value)}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>`;
+
+    body.querySelectorAll('tr.row-clickable').forEach(tr => {
+      tr.addEventListener('click', () => openSkuDetail(brand, tr.dataset.sku));
+    });
+
+    if (data.history.length >= 2) {
+      const color = getComputedStyle(document.documentElement).getPropertyValue('--series-1').trim();
+      renderLineChart('brand-detail-chart', {
+        labels: data.history.map(h => h.label),
+        series: [{ name: 'Units sold', color, values: data.history.map(h => h.units_sold) }],
+        yFormat: fmtNum,
+        showLegend: false,
+      });
+    } else {
+      document.getElementById('brand-detail-chart').innerHTML =
+        `<div class="trend-empty">Only one period of history for this brand so far.</div>`;
+    }
+  });
+}
+
+// ---------- global search ----------
+// Lives in the topbar, works from any page — unlike the per-tab search boxes
+// on the dashboard's action lists, this reaches every current SKU (including
+// "healthy" ones, which aren't embedded in any of those tables).
+(function () {
+  const input = document.getElementById('global-search');
+  const results = document.getElementById('search-results');
+  let debounceTimer = null;
+  let activeIndex = -1;
+
+  function close() {
+    results.classList.remove('open');
+    results.innerHTML = '';
+    activeIndex = -1;
+  }
+
+  function render(items, query) {
+    if (!items.length) {
+      results.innerHTML = `<div class="search-empty">No matches for "${escapeHtml(query)}".</div>`;
+    } else {
+      results.innerHTML = items.map((r, i) => `
+        <div class="search-result-item" data-idx="${i}">
+          <div class="sr-name">
+            <div>${escapeHtml(r.sku)}</div>
+            <div class="sr-brand">${escapeHtml(r.brand)}</div>
+          </div>
+          ${statusBadgeHtml(r.status)}
+          <div class="sr-value">${fmtINR(r.value)}</div>
+        </div>`).join('');
+      results.querySelectorAll('.search-result-item').forEach(el => {
+        el.addEventListener('click', () => {
+          const r = items[Number(el.dataset.idx)];
+          close();
+          input.value = '';
+          openSkuDetail(r.brand, r.sku);
+        });
+      });
+    }
+    results.classList.add('open');
+  }
+
+  input.addEventListener('input', () => {
+    const q = input.value.trim();
+    clearTimeout(debounceTimer);
+    if (q.length < 2) {
+      results.innerHTML = q.length ? `<div class="search-hint">Keep typing… (2+ characters)</div>` : '';
+      results.classList.toggle('open', q.length > 0);
+      return;
+    }
+    debounceTimer = setTimeout(async () => {
+      try {
+        const data = await api(`/api/search?q=${encodeURIComponent(q)}`);
+        render(data.results, q);
+      } catch (e) {
+        results.innerHTML = `<div class="search-empty">${escapeHtml(e.message)}</div>`;
+        results.classList.add('open');
+      }
+    }, 200);
+  });
+
+  document.addEventListener('click', e => {
+    if (!e.target.closest('.topbar-search')) close();
+  });
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Escape') { close(); input.blur(); }
+  });
+})();
+</script>
+{% block scripts %}{% endblock %}
+</body>
+</html>

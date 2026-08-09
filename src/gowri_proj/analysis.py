@@ -1,0 +1,519 @@
+"""Inventory metrics computed across every imported stock statement.
+
+Each import ("report") covers one period — ideally one calendar month, going
+forward, though the very first import may span several months at once. This
+module combines all imported reports into:
+
+- a **current snapshot**: closing stock and value from the most recently
+  imported report (i.e. what's on the shelf right now)
+- a **trailing sales rate**: sales summed across the most recent reports,
+  covering at least TRAILING_DAYS_TARGET days (falling back to all imported
+  history if there isn't that much yet) — this is what "days of cover" is
+  measured against, so it gets more precise as more months are imported
+- a **trend series**: one data point per imported report, for charting how
+  stock value and sales have moved over time
+
+Every SKU is bucketed into one status based on its current stock and its
+sales activity:
+
+- ``out_of_stock``  closing stock is zero (or negative)
+- ``dead_stock``    stock on hand, and nothing bought or sold for at least
+                     DEAD_STOCK_DAYS (searched within a bounded lookback
+                     window, not the complete imported history — see
+                     AGING_LOOKBACK_FLOOR_DAYS/_compute_dead_stock — so this
+                     stays fast as more months pile up over the years)
+- ``low_stock``     selling, but less than LOW_STOCK_DAYS of cover left
+- ``overstock``     selling, but more than OVERSTOCK_DAYS of cover on hand
+- ``healthy``       everything else
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date
+
+import pandas as pd
+
+LOW_STOCK_DAYS = 15
+OVERSTOCK_DAYS = 90
+TRAILING_DAYS_TARGET = 90  # how much recent history to average sales pace over
+DEAD_STOCK_DAYS = 90  # "hasn't sold in 3+ months since it was last purchased"
+
+# Floor for how far back _compute_dead_stock searches for a SKU's last
+# purchase/sale — covers the aging buckets' largest finite boundary (730
+# days / 2 years, see DEAD_STOCK_AGING_BUCKETS below) with margin, so a SKU
+# whose true last activity is (say) 5 years ago is still correctly bucketed
+# as "730+", without the search actually needing to scan 5 years of rows to
+# find that out. Without this floor, dead-stock detection would re-scan
+# every row of every ever-imported report on every dashboard rebuild — the
+# single biggest cost in this whole module once a few years of monthly
+# history pile up (empirically ~75% of total compute time at 10+ years).
+AGING_LOOKBACK_FLOOR_DAYS = 750
+
+
+def _period_label(period_start: date, period_end: date) -> str:
+    if period_start.year == period_end.year and period_start.month == period_end.month:
+        return period_start.strftime("%b %Y")
+    return f"{period_start.strftime('%b %Y')}–{period_end.strftime('%b %Y')}"
+
+
+def _status(
+    closing_stock: float,
+    is_dead: bool,
+    days_of_cover: float,
+    low_stock_days: int = LOW_STOCK_DAYS,
+    overstock_days: int = OVERSTOCK_DAYS,
+) -> str:
+    if closing_stock <= 0:
+        return "out_of_stock"
+    if is_dead:
+        return "dead_stock"
+    if days_of_cover < low_stock_days:
+        return "low_stock"
+    if days_of_cover > overstock_days:
+        return "overstock"
+    return "healthy"
+
+
+def _compute_dead_stock(
+    all_entries: pd.DataFrame,
+    current_skus: pd.DataFrame,
+    latest_period_end: pd.Timestamp,
+    earliest_period_start: pd.Timestamp,
+    dead_stock_days: int,
+) -> pd.DataFrame:
+    """For every SKU in ``current_skus`` (brand, sku): is it dead stock?
+
+    Anchored to whichever is more recent — the last time it was *purchased*
+    or the last time it *sold* — not a fixed trailing window shared by every
+    SKU, and not "purchase" alone (a single sale right after a purchase two
+    years ago shouldn't grant permanent immunity from ever being flagged
+    dead again; the clock has to reset on whatever happened most recently,
+    restock or sale). A SKU restocked last month that hasn't sold yet isn't
+    dead; one restocked 4 months ago that still hasn't moved is; one that
+    sold a handful of units right after being restocked a year ago but
+    nothing since is dead once enough time has passed since *that* sale.
+
+    Two things keep this bounded by *current catalog size*, not by however
+    many months have ever been imported (see AGING_LOOKBACK_FLOOR_DAYS):
+    it only computes for SKUs that exist *now* (not every SKU that ever
+    appeared in any historical report), and it only searches a rolling
+    lookback window for the last purchase/sale rather than all of history —
+    once nothing's happened to a SKU in that whole window, we know it's
+    "dead" and roughly how dead (which aging bucket), without needing to
+    know the *exact* day it was last touched.
+    """
+    lookback_days = max(dead_stock_days, AGING_LOOKBACK_FLOOR_DAYS)
+    lookback_cutoff = latest_period_end - pd.Timedelta(days=lookback_days)
+    recent = all_entries[all_entries["period_end"] >= lookback_cutoff]
+
+    last_purchase_end = recent[recent["purchase"] > 0].groupby(["brand", "sku"])["period_end"].max()
+    last_sale_end = recent[recent["sales"] > 0].groupby(["brand", "sku"])["period_end"].max()
+
+    result = current_skus[["brand", "sku"]].drop_duplicates().set_index(["brand", "sku"])
+    result["last_purchase_end"] = last_purchase_end
+    result["last_sale_end"] = last_sale_end
+    result["last_activity_end"] = result[["last_purchase_end", "last_sale_end"]].max(axis=1)
+    # Nothing found within the lookback window — it's dead, at least
+    # `lookback_days` old, whether the true last activity was just outside
+    # the window or never happened at all; which one doesn't matter for
+    # either the is_dead check or which aging bucket it lands in.
+    #
+    # BUT lookback_cutoff can fall before the earliest report we've ever
+    # imported (e.g. a fresh install with 16 months of history and a
+    # 750-day lookback floor) — in that case "nothing in the window" really
+    # means "nothing in the SKU's entire recorded life," and the honest
+    # last-known-activity date is when we first started tracking it, not
+    # the fictional pre-history cutoff. Using lookback_cutoff there would
+    # fabricate an age the data can't support (e.g. bucketing a SKU as
+    # "2+ years dead" when it's only been tracked for 16 months).
+    fallback = max(lookback_cutoff, earliest_period_start)
+    result["last_activity_end"] = result["last_activity_end"].fillna(fallback)
+
+    result["days_since_activity"] = (latest_period_end - result["last_activity_end"]).dt.days
+    result["is_dead"] = result["days_since_activity"] >= dead_stock_days
+    return result[["is_dead", "days_since_activity"]].reset_index()
+
+
+DEAD_STOCK_AGING_BUCKETS = [
+    ("90-179", 90, 180),
+    ("180-364", 180, 365),
+    ("365-729", 365, 730),
+    ("730+", 730, None),  # 2 years+
+]
+
+
+def _dead_stock_aging(dead_stock: pd.DataFrame) -> list:
+    """Bucket the dead-stock list by how long it's actually been dead.
+
+    Returns a list (not a dict) in youngest-to-oldest bucket order — a dict
+    would look right in Python, but round-tripping through JSON for the
+    webapp is free to reorder its keys (Flask's ``tojson`` filter
+    alphabetizes them by default), which is exactly what scrambled the tile
+    order in the UI. A list's order can't be reshuffled by serialization.
+    """
+    aging = []
+    for label, low, high in DEAD_STOCK_AGING_BUCKETS:
+        if high is None:
+            bucket = dead_stock[dead_stock["days_since_activity"] >= low]
+        else:
+            bucket = dead_stock[
+                (dead_stock["days_since_activity"] >= low) & (dead_stock["days_since_activity"] < high)
+            ]
+        aging.append({"bucket": label, "count": int(len(bucket)), "value": round(float(bucket["value"].sum()), 2)})
+    return aging
+
+
+def _select_trailing_reports(reports: pd.DataFrame, trailing_days_target: int) -> pd.DataFrame:
+    """Most recent reports whose combined period_days reaches the target (or all of them)."""
+    ordered = reports.sort_values("period_end", ascending=False)
+    running = 0
+    ids = []
+    for _, r in ordered.iterrows():
+        if running >= trailing_days_target:
+            break
+        ids.append(r["report_id"])
+        running += int(r["period_days"])
+    return reports[reports["report_id"].isin(ids)]
+
+
+@dataclass
+class HistoryMeta:
+    company: str | None
+    location: str | None
+    earliest_period_start: date
+    latest_period_end: date
+    report_count: int
+    trailing_days: int  # actual days of history the sales rate is based on
+
+
+@dataclass
+class TrendSeries:
+    labels: list[str]
+    period_ends: list[str]
+    inventory_value: list[float]
+    units_sold: list[float]
+    top_brands: list[str]
+    brand_units_sold: dict[str, list[float]]  # brand -> per-period units sold
+
+
+@dataclass
+class InventorySummary:
+    meta: HistoryMeta
+    total_skus: int
+    total_brands: int
+    total_value: float
+    total_units: float
+    status_counts: dict[str, int]
+    status_values: dict[str, float]
+    top_brands_by_value: pd.DataFrame
+    top_skus_by_value: pd.DataFrame
+    top_skus_by_sales: pd.DataFrame
+    out_of_stock: pd.DataFrame
+    low_stock: pd.DataFrame
+    dead_stock: pd.DataFrame
+    overstock: pd.DataFrame
+    dead_stock_aging: list
+    trend: TrendSeries
+    enriched: pd.DataFrame = field(repr=False)
+
+
+def summarize_history(
+    all_entries: pd.DataFrame,
+    trailing_days_target: int = TRAILING_DAYS_TARGET,
+    dead_stock_days: int = DEAD_STOCK_DAYS,
+    low_stock_days: int = LOW_STOCK_DAYS,
+    overstock_days: int = OVERSTOCK_DAYS,
+) -> InventorySummary:
+    """Build the full inventory summary from every imported report.
+
+    ``all_entries`` is the output of ``db.load_all_entries``: one row per
+    (report, SKU), with report period columns joined in.
+    """
+    reports = (
+        all_entries[["report_id", "period_start", "period_end", "period_days", "company", "location"]]
+        .drop_duplicates("report_id")
+        .sort_values("period_end")
+        .reset_index(drop=True)
+    )
+    latest = reports.iloc[-1]
+    latest_report_id = latest["report_id"]
+
+    # --- current snapshot: what's on the shelf right now ---
+    current = all_entries[all_entries["report_id"] == latest_report_id][
+        ["brand", "sku", "opening_stock", "purchase", "closing_stock", "value"]
+    ].copy()
+
+    # --- trailing sales rate (drives days-of-cover, low/overstock) ---
+    trailing_reports = _select_trailing_reports(reports, trailing_days_target)
+    trailing_days = int(trailing_reports["period_days"].sum())
+    trailing_entries = all_entries[all_entries["report_id"].isin(trailing_reports["report_id"])]
+    trailing_sales = (
+        trailing_entries.groupby(["brand", "sku"])["sales"].sum().reset_index(name="trailing_sales")
+    )
+
+    # --- dead stock: no sales since last purchase, independent of the trailing window above ---
+    dead_flags = _compute_dead_stock(
+        all_entries, current, latest["period_end"], reports.iloc[0]["period_start"], dead_stock_days
+    )
+
+    merged = current.merge(trailing_sales, on=["brand", "sku"], how="left")
+    merged["trailing_sales"] = merged["trailing_sales"].fillna(0.0)
+    merged = merged.merge(dead_flags, on=["brand", "sku"], how="left")
+    merged["is_dead"] = merged["is_dead"].fillna(False)
+    merged["days_since_activity"] = merged["days_since_activity"].fillna(0).astype(int)
+    merged["daily_sales"] = merged["trailing_sales"] / trailing_days if trailing_days > 0 else 0.0
+    merged["days_of_cover"] = merged.apply(
+        lambda r: (r["closing_stock"] / r["daily_sales"]) if r["daily_sales"] > 0 else float("inf"),
+        axis=1,
+    )
+    merged["status"] = merged.apply(
+        lambda r: _status(r["closing_stock"], r["is_dead"], r["days_of_cover"], low_stock_days, overstock_days),
+        axis=1,
+    )
+    # Keep a "sales" alias so downstream table/column code matches the
+    # trailing-window sales figure it displays (dead-stock classification
+    # uses its own since-purchase window internally, above).
+    merged = merged.rename(columns={"trailing_sales": "sales"})
+
+    status_counts = merged["status"].value_counts().to_dict()
+    status_values = merged.groupby("status")["value"].sum().to_dict()
+
+    top_brands_by_value = (
+        merged.groupby("brand")["value"].sum().sort_values(ascending=False).head(10).reset_index()
+    )
+    top_skus_by_value = merged.sort_values("value", ascending=False).head(15)[
+        ["brand", "sku", "closing_stock", "value"]
+    ]
+    top_skus_by_sales = merged.sort_values("sales", ascending=False).head(15)[
+        ["brand", "sku", "sales", "value"]
+    ]
+
+    def subset(status: str, sort_col: str, extra_cols: list[str] | None = None) -> pd.DataFrame:
+        cols = ["brand", "sku", "opening_stock", "purchase", "sales", "closing_stock", "value", "days_of_cover"]
+        cols = cols + (extra_cols or [])
+        s = merged[merged["status"] == status][cols]
+        return s.sort_values(sort_col, ascending=False)
+
+    dead_stock_df = subset("dead_stock", "value", extra_cols=["days_since_activity"])
+    dead_stock_aging = _dead_stock_aging(dead_stock_df)
+
+    # --- trend series, one point per imported report ---
+    per_report = all_entries.groupby("report_id").agg(value=("value", "sum"), sales=("sales", "sum"))
+    reports_ordered = reports.merge(per_report, on="report_id")
+    labels = [
+        _period_label(r["period_start"].date(), r["period_end"].date())
+        for _, r in reports_ordered.iterrows()
+    ]
+    top_brand_names = list(top_brands_by_value["brand"].head(5))
+    brand_units_sold: dict[str, list[float]] = {}
+    for brand in top_brand_names:
+        by_report = (
+            all_entries[all_entries["brand"] == brand].groupby("report_id")["sales"].sum()
+        )
+        brand_units_sold[brand] = [
+            float(by_report.get(rid, 0.0)) for rid in reports_ordered["report_id"]
+        ]
+
+    trend = TrendSeries(
+        labels=labels,
+        period_ends=[r["period_end"].date().isoformat() for _, r in reports_ordered.iterrows()],
+        inventory_value=[round(float(v), 2) for v in reports_ordered["value"]],
+        units_sold=[round(float(v), 2) for v in reports_ordered["sales"]],
+        top_brands=top_brand_names,
+        brand_units_sold=brand_units_sold,
+    )
+
+    meta = HistoryMeta(
+        company=latest["company"],
+        location=latest["location"],
+        earliest_period_start=reports.iloc[0]["period_start"].date(),
+        latest_period_end=latest["period_end"].date(),
+        report_count=len(reports),
+        trailing_days=trailing_days,
+    )
+
+    return InventorySummary(
+        meta=meta,
+        total_skus=len(merged),
+        total_brands=merged["brand"].nunique(),
+        total_value=float(merged["value"].sum()),
+        total_units=float(merged["closing_stock"].sum()),
+        status_counts=status_counts,
+        status_values=status_values,
+        top_brands_by_value=top_brands_by_value,
+        top_skus_by_value=top_skus_by_value,
+        top_skus_by_sales=top_skus_by_sales,
+        out_of_stock=subset("out_of_stock", "value"),
+        low_stock=subset("low_stock", "days_of_cover"),
+        dead_stock=dead_stock_df,
+        overstock=subset("overstock", "value"),
+        dead_stock_aging=dead_stock_aging,
+        trend=trend,
+        enriched=merged,
+    )
+
+
+def search_skus(enriched: pd.DataFrame, query: str, limit: int = 50) -> list[dict]:
+    """Case-insensitive substring search across every *current* SKU — brand
+    or name — not scoped to any one status bucket. Unlike the per-tab search
+    boxes on the dashboard (which only filter within whichever action-list
+    table is already embedded on the page — out-of-stock/low-stock/
+    dead-stock/overstock), this covers every SKU including "healthy" ones,
+    which aren't embedded anywhere on the page at all.
+    """
+    q = query.strip().lower()
+    if len(q) < 2:
+        return []
+    mask = enriched["brand"].str.lower().str.contains(q, na=False, regex=False) | enriched["sku"].str.lower().str.contains(
+        q, na=False, regex=False
+    )
+    matches = enriched[mask].sort_values("value", ascending=False).head(limit)
+    return [
+        {
+            "brand": r["brand"],
+            "sku": r["sku"],
+            "status": r["status"],
+            "closing_stock": float(r["closing_stock"]),
+            "value": round(float(r["value"]), 2),
+            "days_of_cover": None if r["days_of_cover"] == float("inf") else round(float(r["days_of_cover"]), 1),
+        }
+        for _, r in matches.iterrows()
+    ]
+
+
+def find_import_gaps(reports: pd.DataFrame) -> dict:
+    """Look for gaps in monthly coverage across every imported report.
+
+    ``reports`` needs ``period_start``/``period_end`` columns (e.g.
+    ``db.list_reports()``'s output). Returns two views of the same question
+    ("is there a stretch of time nothing was imported for?"):
+
+    - ``missing_months`` — the coarse, calendar-month headline: a month with
+      *zero* reports overlapping it at all (a report counts as covering a
+      month if its period overlaps that month at all, not just if it starts
+      there — so one wide report spanning several months correctly covers
+      all of them).
+    - ``coverage_gaps`` — the precise day-level view: the gap between when
+      one report's period ends and the next one's begins. This is what
+      actually catches a boundary gap that doesn't line up with whole
+      calendar months — exactly the shape of the real incident that
+      motivated this function (193 SKUs' worth of stock going untracked
+      across a financial-year rollover).
+    """
+    if reports.empty:
+        return {"missing_months": [], "coverage_gaps": []}
+
+    ordered = reports.sort_values("period_start").reset_index(drop=True)
+    starts = pd.to_datetime(ordered["period_start"])
+    ends = pd.to_datetime(ordered["period_end"])
+
+    coverage_gaps = []
+    covered_until = ends.iloc[0]
+    for i in range(1, len(ordered)):
+        if starts.iloc[i] > covered_until + pd.Timedelta(days=1):
+            gap_start = covered_until + pd.Timedelta(days=1)
+            gap_end = starts.iloc[i] - pd.Timedelta(days=1)
+            coverage_gaps.append(
+                {
+                    "gap_start": gap_start.date().isoformat(),
+                    "gap_end": gap_end.date().isoformat(),
+                    "days": (gap_end - gap_start).days + 1,
+                }
+            )
+        covered_until = max(covered_until, ends.iloc[i])
+
+    months = pd.period_range(starts.min().to_period("M"), ends.max().to_period("M"), freq="M")
+    missing_months = []
+    for m in months:
+        month_start, month_end = m.start_time, m.end_time
+        overlaps = ((starts <= month_end) & (ends >= month_start)).any()
+        if not overlaps:
+            missing_months.append(month_start.strftime("%b %Y"))
+
+    return {"missing_months": missing_months, "coverage_gaps": coverage_gaps}
+
+
+def sku_history(all_entries: pd.DataFrame, brand: str, sku: str) -> list[dict]:
+    """Every imported period's figures for one specific SKU, oldest first."""
+    rows = all_entries[(all_entries["brand"] == brand) & (all_entries["sku"] == sku)].sort_values("period_end")
+    return [
+        {
+            "label": _period_label(r["period_start"].date(), r["period_end"].date()),
+            "period_end": r["period_end"].date().isoformat(),
+            "opening_stock": float(r["opening_stock"]),
+            "purchase": float(r["purchase"]),
+            "sales": float(r["sales"]),
+            "closing_stock": float(r["closing_stock"]),
+            "value": float(r["value"]),
+        }
+        for _, r in rows.iterrows()
+    ]
+
+
+def brand_history(all_entries: pd.DataFrame, brand: str) -> list[dict]:
+    """Every imported period's totals for one specific brand, oldest first."""
+    rows = all_entries[all_entries["brand"] == brand]
+    per_report = rows.groupby("report_id").agg(
+        value=("value", "sum"), sales=("sales", "sum"), period_start=("period_start", "first"),
+        period_end=("period_end", "first"),
+    ).sort_values("period_end")
+    return [
+        {
+            "label": _period_label(r["period_start"].date(), r["period_end"].date()),
+            "period_end": r["period_end"].date().isoformat(),
+            "value": round(float(r["value"]), 2),
+            "units_sold": round(float(r["sales"]), 2),
+        }
+        for _, r in per_report.iterrows()
+    ]
+
+
+# Rows that are logically impossible, not just unusual — worth surfacing so a
+# bad source export doesn't silently skew totals or trend charts. This is
+# purely informational: nothing here changes what gets imported or how it's
+# classified, since we have no way to know the *correct* value, only that
+# something's off. A tiny negative value very close to zero (floating-point
+# noise from the source spreadsheet's own cost calculations) isn't flagged —
+# only when the magnitude is large enough to plausibly matter.
+_VALUE_NOISE_FLOOR = 0.01  # rupees
+
+
+def _quality_checks(row: pd.Series) -> list[str]:
+    issues = []
+    if row["closing_stock"] > 0 and row["value"] < -_VALUE_NOISE_FLOOR:
+        issues.append("Positive stock but negative value")
+    if row["closing_stock"] < 0:
+        issues.append("Negative closing stock")
+    if row["opening_stock"] < 0:
+        issues.append("Negative opening stock")
+    if row["sales"] < 0:
+        issues.append("Negative sales (possibly a return)")
+    return issues
+
+
+def find_data_quality_issues(all_entries: pd.DataFrame) -> list[dict]:
+    """Scan every imported row for impossible combinations, most recent first."""
+    candidates = all_entries[
+        ((all_entries["closing_stock"] > 0) & (all_entries["value"] < -_VALUE_NOISE_FLOOR))
+        | (all_entries["closing_stock"] < 0)
+        | (all_entries["opening_stock"] < 0)
+        | (all_entries["sales"] < 0)
+    ]
+    out = []
+    for _, r in candidates.sort_values("period_end", ascending=False).iterrows():
+        for issue in _quality_checks(r):
+            out.append(
+                {
+                    "brand": r["brand"],
+                    "sku": r["sku"],
+                    "period_label": _period_label(r["period_start"].date(), r["period_end"].date()),
+                    "period_end": r["period_end"].date().isoformat(),
+                    "issue": issue,
+                    "opening_stock": float(r["opening_stock"]),
+                    "purchase": float(r["purchase"]),
+                    "sales": float(r["sales"]),
+                    "closing_stock": float(r["closing_stock"]),
+                    "value": round(float(r["value"]), 2),
+                }
+            )
+    return out

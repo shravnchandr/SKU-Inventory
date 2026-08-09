@@ -1,0 +1,444 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+
+{% block head %}
+<style>
+  .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
+
+  .bar-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; position: relative; }
+  .bar-row .bar-label {
+    width: 40%; flex: 0 0 40%; font-size: var(--text-base); color: var(--text-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .bar-track { flex: 1; position: relative; height: 16px; background: var(--gridline); border-radius: 4px; overflow: visible; }
+  .bar-fill { position: absolute; left: 0; top: 0; height: 100%; border-radius: 4px; min-width: 3px; }
+  .bar-value {
+    flex: 0 0 auto; min-width: 78px; text-align: right; font-size: var(--text-base);
+    font-variant-numeric: tabular-nums; color: var(--text-primary);
+  }
+  .bar-tooltip {
+    position: absolute; bottom: 100%; left: 40%; transform: translateY(-6px);
+    background: var(--text-primary); color: var(--surface-1);
+    font-size: var(--text-sm); padding: 4px 8px; border-radius: var(--radius-sm); white-space: nowrap;
+    opacity: 0; pointer-events: none; transition: opacity 0.1s; z-index: 5;
+  }
+  .bar-row:hover .bar-tooltip { opacity: 1; }
+  .bar-row-clickable {
+    cursor: pointer; border-radius: var(--radius-sm); margin: 0 -6px; padding-left: 6px; padding-right: 6px;
+    transition: background var(--transition-fast);
+  }
+  .bar-row-clickable:hover, .bar-row-clickable:focus-visible { background: var(--page); }
+  .bar-row-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+
+  .status-list { display: flex; flex-direction: column; gap: 10px; }
+  .status-item { display: flex; align-items: center; gap: 12px; }
+  .status-swatch { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
+  .status-name { width: 110px; flex: 0 0 auto; font-size: var(--text-md); font-weight: 600; }
+  .status-blurb { flex: 1; font-size: var(--text-sm); color: var(--text-muted); }
+  .status-track { flex: 1 1 240px; height: 14px; background: var(--gridline); border-radius: 4px; position: relative; }
+  .status-fill { position: absolute; left: 0; top: 0; height: 100%; border-radius: 4px; min-width: 3px; }
+  .status-nums { flex: 0 0 auto; width: 190px; text-align: right; font-size: var(--text-sm); font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+
+  /* ---------- segmented-control tabs ---------- */
+  .tabs {
+    display: inline-flex; gap: 2px; flex-wrap: wrap; margin-bottom: 12px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--radius-pill); padding: 3px;
+  }
+  .tab-btn {
+    border: 1px solid transparent; background: transparent; color: var(--text-secondary);
+    border-radius: var(--radius-pill); padding: 6px 14px; font-size: var(--text-sm); cursor: pointer; font-family: inherit;
+    transition: background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast), border-color var(--transition-fast);
+  }
+  .tab-btn:hover:not(.active) { color: var(--text-primary); }
+  .tab-btn.active {
+    background: var(--surface-1); color: var(--text-primary); font-weight: 600;
+    border-color: var(--border); box-shadow: var(--shadow-sm);
+  }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  .table-controls { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; }
+  .search-input {
+    flex: 1; min-width: 220px; background: var(--page); border: 1px solid var(--border);
+    color: var(--text-primary); border-radius: var(--radius-sm); padding: 7px 10px; font-size: var(--text-base);
+  }
+  .row-count { font-size: var(--text-sm); color: var(--text-muted); white-space: nowrap; }
+
+  .aging-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 16px; }
+</style>
+{% endblock %}
+
+{% block content %}
+  <div class="page-head">
+    <div>
+      <h1>Dashboard</h1>
+      <div class="sub" id="hdr-sub"></div>
+    </div>
+    <a class="btn" href="{{ url_for('reports') }}">Manage reports →</a>
+  </div>
+
+  <div class="kpi-row" id="kpi-row"></div>
+
+  <div class="card">
+    <h2>Stock health</h2>
+    <div class="card-sub">Every SKU, bucketed by how it's moving against its stock on hand.</div>
+    <div class="status-list" id="status-list"></div>
+  </div>
+
+  <div class="grid-2">
+    <div class="card">
+      <h2>Top brands by inventory value</h2>
+      <div class="card-sub">Where locked-up capital concentrates.</div>
+      <div id="chart-brands"></div>
+    </div>
+    <div class="card">
+      <h2>Top SKUs by inventory value</h2>
+      <div class="card-sub">Highest-value individual items on the shelf.</div>
+      <div id="chart-skus"></div>
+    </div>
+  </div>
+
+  <div class="card" id="trend-card">
+    <h2>Trends across imported months</h2>
+    <div class="card-sub" id="trend-sub"></div>
+    <div id="trend-empty" class="trend-empty" style="display:none">
+      Import another month's stock statement to start seeing trends here.
+    </div>
+    <div id="trend-body">
+      <div class="grid-2">
+        <div>
+          <div class="chart-title">Inventory value at period end</div>
+          <div id="chart-trend-value"></div>
+        </div>
+        <div>
+          <div class="chart-title">Units sold per period</div>
+          <div id="chart-trend-units"></div>
+        </div>
+      </div>
+      <div style="margin-top:18px">
+        <div class="chart-title">Units sold per period — top 5 brands</div>
+        <div id="chart-trend-brands"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Action lists</h2>
+    <div class="card-sub">Search across brand or SKU name; click a column to sort.</div>
+    <div class="tabs" id="tabs"></div>
+    <div id="tab-panels"></div>
+  </div>
+{% endblock %}
+
+{% block footer %}Generated locally from imported stock statements · <span id="footer-note"></span>{% endblock %}
+
+{% block scripts %}
+<script id="data" type="application/json">{{ payload | tojson }}</script>
+<script>
+const DATA = JSON.parse(document.getElementById('data').textContent);
+// fmtINR, fmtNum, renderLineChart, statusBadgeHtml, openSkuDetail, openBrandDetail
+// are all defined once in base.html — shared with the global search box and
+// usable from any page, not just this one.
+const css = getComputedStyle(document.documentElement);
+
+// ---------- header ----------
+document.getElementById('hdr-sub').textContent =
+  (DATA.meta.location ? DATA.meta.location + ' · ' : '') +
+  `As of ${DATA.meta.latest_period_end} · ${DATA.meta.report_count} report${DATA.meta.report_count === 1 ? '' : 's'} imported ` +
+  `(${DATA.meta.earliest_period_start} to ${DATA.meta.latest_period_end}) · ` +
+  `sales pace based on the trailing ${DATA.meta.trailing_days} days`;
+document.getElementById('footer-note').textContent =
+  `${DATA.kpis.total_skus.toLocaleString('en-IN')} SKUs across ${DATA.kpis.total_brands.toLocaleString('en-IN')} brands`;
+
+// ---------- KPI tiles ----------
+const kpis = [
+  { label: 'Total SKUs', value: fmtNum(DATA.kpis.total_skus) },
+  { label: 'Brands stocked', value: fmtNum(DATA.kpis.total_brands) },
+  { label: 'Inventory value on hand', value: fmtINR(DATA.kpis.total_value) },
+  { label: 'Units on hand', value: fmtNum(DATA.kpis.total_units) },
+];
+document.getElementById('kpi-row').innerHTML = kpis.map(k =>
+  `<div class="stat-tile stat-tile-lg"><div class="label">${k.label}</div><div class="value">${k.value}</div></div>`
+).join('');
+
+// ---------- status breakdown ----------
+const maxCount = Math.max(...DATA.status_breakdown.map(s => s.count), 1);
+document.getElementById('status-list').innerHTML = DATA.status_breakdown.map(s => {
+  const color = css.getPropertyValue(s.color_var).trim() || '#2a78d6';
+  const pct = (100 * s.count / maxCount).toFixed(1);
+  return `
+    <div class="status-item">
+      <span class="status-swatch" style="background:${color}"></span>
+      <span class="status-name">${s.label}</span>
+      <span class="status-track"><span class="status-fill" style="width:${pct}%;background:${color}"></span></span>
+      <span class="status-nums">${fmtNum(s.count)} SKUs · ${fmtINR(s.value)}</span>
+      <span class="status-blurb">${s.blurb}</span>
+    </div>`;
+}).join('');
+
+// ---------- horizontal bar chart (single hue) ----------
+function renderBarChart(containerId, rows, valueFmt, onClick) {
+  const max = Math.max(...rows.map(r => r.value), 1);
+  const color = css.getPropertyValue('--series-1').trim();
+  const html = rows.map((r, i) => {
+    const pct = Math.max(2, (100 * r.value / max));
+    const label = escapeHtml(r.label);
+    return `
+      <div class="bar-row${onClick ? ' bar-row-clickable' : ''}" ${onClick ? `data-idx="${i}" tabindex="0" role="button"` : ''}>
+        <span class="bar-label">${label}</span>
+        <span class="bar-track"><span class="bar-fill" style="width:${pct}%;background:${color}"></span></span>
+        <span class="bar-value">${valueFmt(r.value)}</span>
+        <span class="bar-tooltip">${label}: ${valueFmt(r.value)}</span>
+      </div>`;
+  }).join('');
+  const el = document.getElementById(containerId);
+  el.innerHTML = html;
+  if (onClick) {
+    el.querySelectorAll('.bar-row-clickable').forEach(row => {
+      const handler = () => onClick(rows[Number(row.dataset.idx)]);
+      row.addEventListener('click', handler);
+      row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); } });
+    });
+  }
+}
+renderBarChart('chart-brands', DATA.top_brands_by_value, fmtINR, r => openBrandDetail(r.brand));
+renderBarChart('chart-skus', DATA.top_skus_by_value, fmtINR, r => openSkuDetail(r.brand, r.sku));
+
+// ---------- trend section ----------
+(function () {
+  const t = DATA.trend;
+  const hasTrend = t.labels.length >= 2;
+  document.getElementById('trend-sub').textContent = hasTrend
+    ? `One point per imported report, ${t.labels[0]} through ${t.labels[t.labels.length - 1]}.`
+    : 'Only one report imported so far.';
+  document.getElementById('trend-empty').style.display = hasTrend ? 'none' : '';
+  document.getElementById('trend-body').style.display = hasTrend ? '' : 'none';
+  if (!hasTrend) return;
+
+  const seriesColor = css.getPropertyValue('--series-1').trim();
+  renderLineChart('chart-trend-value', {
+    labels: t.labels,
+    series: [{ name: 'Inventory value', color: seriesColor, values: t.inventory_value }],
+    yFormat: fmtINR,
+    showLegend: false,
+  });
+  renderLineChart('chart-trend-units', {
+    labels: t.labels,
+    series: [{ name: 'Units sold', color: seriesColor, values: t.units_sold }],
+    yFormat: fmtNum,
+    showLegend: false,
+  });
+
+  const brandColorVars = ['--series-1', '--series-2', '--series-3', '--series-4', '--series-5'];
+  const brandSeries = t.top_brands.map((brand, i) => ({
+    name: brand,
+    color: css.getPropertyValue(brandColorVars[i % brandColorVars.length]).trim(),
+    values: t.brand_units_sold[brand],
+  }));
+  if (brandSeries.length) {
+    renderLineChart('chart-trend-brands', {
+      labels: t.labels,
+      series: brandSeries,
+      yFormat: fmtNum,
+      showLegend: true,
+      onLegendClick: s => openBrandDetail(s.name),
+    });
+  }
+})();
+
+// ---------- action tables ----------
+const TAB_DEFS = [
+  { key: 'out_of_stock', label: 'Out of stock', sort: ['value', 'desc'], emptyGood: "Nothing is out of stock — every SKU has something on the shelf." },
+  { key: 'low_stock', label: 'Low stock', sort: ['days_of_cover', 'asc'], emptyGood: `Nothing is running low — no SKU is under ${DATA.meta.thresholds.low_stock_days} days of cover.` },
+  { key: 'dead_stock', label: 'Dead stock', sort: ['value', 'desc'], emptyGood: "No dead stock — everything on the shelf has sold recently." },
+  { key: 'overstock', label: 'Overstock', sort: ['value', 'desc'], emptyGood: `Nothing is overstocked — no SKU has more than ${DATA.meta.thresholds.overstock_days} days of cover.` },
+];
+// Dead stock gets an extra "Days dead" column the other three tabs don't need.
+function colsFor(key) {
+  return key === 'dead_stock' ? DATA.dead_stock_table_columns : DATA.table_columns;
+}
+
+const tabsEl = document.getElementById('tabs');
+const panelsEl = document.getElementById('tab-panels');
+
+tabsEl.innerHTML = TAB_DEFS.map((t, i) =>
+  `<button class="tab-btn${i === 0 ? ' active' : ''}" data-tab="${t.key}">${t.label} (${DATA.tables[t.key].length})</button>`
+).join('');
+
+panelsEl.innerHTML = TAB_DEFS.map((t, i) => `
+  <div class="tab-panel${i === 0 ? ' active' : ''}" id="panel-${t.key}">
+    ${t.key === 'dead_stock' ? '<div class="aging-tiles" id="dead-stock-aging"></div>' : ''}
+    <div class="table-controls">
+      <input class="search-input" type="search" placeholder="Search brand or SKU…" data-tab="${t.key}" />
+      <span class="row-count" data-count="${t.key}"></span>
+      <button class="tab-btn show-all-btn" data-tab="${t.key}" type="button" style="display:none"></button>
+      <button class="tab-btn export-btn" data-tab="${t.key}" type="button">⭳ Export CSV</button>
+    </div>
+    <div class="table-scroll">
+      <table class="data-table" data-tab="${t.key}">
+        <thead><tr>${colsFor(t.key).map(([k, l]) => `<th data-key="${k}">${l}</th>`).join('')}</tr></thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+`).join('');
+
+const ROW_LIMIT = 300;
+const state = {};
+TAB_DEFS.forEach(t => {
+  state[t.key] = { query: '', sortKey: t.sort[0], sortDir: t.sort[1], showAll: false };
+});
+
+function cellText(row, key) {
+  if (row[key] === null || row[key] === undefined) return key === 'days_of_cover' ? '∞' : '–';
+  if (key === 'value') return fmtINR(row[key]);
+  if (key === 'days_of_cover') return Number(row[key]).toLocaleString('en-IN');
+  if (typeof row[key] === 'number') return fmtNum(row[key]);
+  return escapeHtml(row[key]);
+}
+
+function getFilteredSortedRows(key) {
+  const st = state[key];
+  const all = DATA.tables[key];
+  const q = st.query.trim().toLowerCase();
+  let rows = !q ? all : all.filter(r =>
+    (r.brand || '').toLowerCase().includes(q) || (r.sku || '').toLowerCase().includes(q)
+  );
+  rows = rows.slice().sort((a, b) => {
+    let av = a[st.sortKey], bv = b[st.sortKey];
+    if (av === null || av === undefined) av = st.sortDir === 'asc' ? Infinity : -Infinity;
+    if (bv === null || bv === undefined) bv = st.sortDir === 'asc' ? Infinity : -Infinity;
+    if (typeof av === 'string') return st.sortDir === 'asc' ? av.localeCompare(bv) : bv.localeCompare(av);
+    return st.sortDir === 'asc' ? av - bv : bv - av;
+  });
+  return rows;
+}
+
+function emptyStateHtml(key) {
+  const def = TAB_DEFS.find(t => t.key === key);
+  const hasQuery = state[key].query.trim() !== '';
+  const hasAnyRows = DATA.tables[key].length > 0;
+  const colCount = colsFor(key).length;
+  if (hasAnyRows && hasQuery) {
+    return `<tr><td colspan="${colCount}" style="text-align:center;color:var(--text-muted);padding:20px">No rows match "${escapeHtml(state[key].query)}".</td></tr>`;
+  }
+  return `<tr><td colspan="${colCount}" style="text-align:center;color:var(--status-good);padding:20px">✓ ${def.emptyGood}</td></tr>`;
+}
+
+function renderTable(key) {
+  const st = state[key];
+  const rows = getFilteredSortedRows(key);
+  const limit = st.showAll ? rows.length : ROW_LIMIT;
+  const shown = rows.slice(0, limit);
+  const tbody = document.querySelector(`table[data-tab="${key}"] tbody`);
+  const cols = colsFor(key);
+  tbody.innerHTML = shown.map(r =>
+    `<tr class="row-clickable" data-brand="${escapeHtml(r.brand || '')}" data-sku="${escapeHtml(r.sku || '')}">` +
+    `${cols.map(([k]) => `<td>${cellText(r, k)}</td>`).join('')}</tr>`
+  ).join('') || emptyStateHtml(key);
+  tbody.querySelectorAll('tr.row-clickable').forEach(tr => {
+    tr.addEventListener('click', () => openSkuDetail(tr.dataset.brand, tr.dataset.sku));
+  });
+  document.querySelector(`[data-count="${key}"]`).textContent =
+    rows.length > shown.length ? `Showing ${shown.length} of ${rows.length}` : `${rows.length} rows`;
+
+  const showAllBtn = document.querySelector(`.show-all-btn[data-tab="${key}"]`);
+  if (rows.length > ROW_LIMIT) {
+    showAllBtn.style.display = '';
+    showAllBtn.textContent = st.showAll ? 'Show first 300' : `Show all ${rows.length.toLocaleString('en-IN')}`;
+  } else {
+    showAllBtn.style.display = 'none';
+  }
+
+  document.querySelectorAll(`table[data-tab="${key}"] th`).forEach(th => {
+    th.classList.toggle('sorted', th.dataset.key === st.sortKey);
+    th.setAttribute('data-dir', st.sortKey === th.dataset.key ? (st.sortDir === 'asc' ? '▲' : '▼') : '');
+  });
+}
+
+tabsEl.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    tabsEl.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    panelsEl.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.getElementById(`panel-${btn.dataset.tab}`).classList.add('active');
+  });
+});
+
+panelsEl.querySelectorAll('.search-input').forEach(input => {
+  input.addEventListener('input', () => {
+    state[input.dataset.tab].query = input.value;
+    renderTable(input.dataset.tab);
+  });
+});
+
+function csvCell(v) {
+  if (v === null || v === undefined) return '';
+  const s = String(v);
+  return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+}
+
+function exportCsv(key, label) {
+  const rows = getFilteredSortedRows(key);
+  const cols = colsFor(key);
+  const header = cols.map(([, l]) => csvCell(l)).join(',');
+  const lines = rows.map(r => cols.map(([k]) => csvCell(r[k])).join(','));
+  const csv = [header, ...lines].join('\r\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `${label.toLowerCase().replace(/\s+/g, '_')}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
+panelsEl.querySelectorAll('.export-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const def = TAB_DEFS.find(t => t.key === btn.dataset.tab);
+    exportCsv(btn.dataset.tab, def.label);
+  });
+});
+
+panelsEl.querySelectorAll('.show-all-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const key = btn.dataset.tab;
+    state[key].showAll = !state[key].showAll;
+    renderTable(key);
+  });
+});
+
+panelsEl.querySelectorAll('th').forEach(th => {
+  th.addEventListener('click', () => {
+    const key = th.closest('table').dataset.tab;
+    const st = state[key];
+    if (st.sortKey === th.dataset.key) {
+      st.sortDir = st.sortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      st.sortKey = th.dataset.key;
+      st.sortDir = 'desc';
+    }
+    renderTable(key);
+  });
+});
+
+TAB_DEFS.forEach(t => renderTable(t.key));
+
+// ---------- dead-stock aging ----------
+(function () {
+  const aging = DATA.dead_stock_aging;
+  if (!aging) return;
+  const labels = { '90-179': '90–179 days', '180-364': '180–364 days', '365-729': '1–2 years', '730+': '2+ years' };
+  const el = document.getElementById('dead-stock-aging');
+  el.innerHTML = aging.map(d => `
+    <div class="stat-tile">
+      <div class="label">${labels[d.bucket] || d.bucket}</div>
+      <div class="value">${fmtNum(d.count)} SKUs</div>
+      <div class="sub">${fmtINR(d.value)}</div>
+    </div>`).join('');
+})();
+</script>
+{% endblock %}

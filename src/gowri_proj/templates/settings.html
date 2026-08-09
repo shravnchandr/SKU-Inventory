@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}Settings{% endblock %}
+
+{% block head %}
+<style>
+  .settings-form { display: flex; flex-direction: column; gap: 18px; max-width: 520px; }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: var(--text-md); font-weight: 600; }
+  .field .help { font-size: var(--text-sm); color: var(--text-muted); }
+  .field input {
+    background: var(--page); border: 1px solid var(--border); color: var(--text-primary);
+    border-radius: var(--radius-sm); padding: 8px 10px; font-size: var(--text-md); font-family: inherit; width: 140px;
+    transition: border-color var(--transition-fast);
+  }
+  .field input:invalid { border-color: var(--status-critical); }
+  .settings-actions { display: flex; align-items: center; gap: 10px; margin-top: 6px; }
+  .settings-updated { font-size: var(--text-sm); color: var(--text-muted); }
+</style>
+{% endblock %}
+
+{% block content %}
+  <div class="page-head">
+    <div>
+      <h1>Settings</h1>
+      <div class="sub">How SKUs are classified — changes apply everywhere (dashboard, CLI defaults, exports) immediately.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Stock health thresholds</h2>
+    <div class="card-sub">
+      These four numbers drive every status bucket on the dashboard. The command-line tool
+      reads the same values by default — pass a CLI flag for a one-off override without changing this.
+    </div>
+    <form class="settings-form" id="settings-form">
+      <div class="field">
+        <label for="low_stock_days">Low stock — days of cover</label>
+        <input type="number" id="low_stock_days" name="low_stock_days" min="1" max="3650" value="{{ settings.low_stock_days }}" required />
+        <div class="help">A SKU is flagged <b>low stock</b> once its days-of-cover drops below this.</div>
+      </div>
+      <div class="field">
+        <label for="overstock_days">Overstock — days of cover</label>
+        <input type="number" id="overstock_days" name="overstock_days" min="1" max="3650" value="{{ settings.overstock_days }}" required />
+        <div class="help">A SKU is flagged <b>overstock</b> once its days-of-cover exceeds this.</div>
+      </div>
+      <div class="field">
+        <label for="dead_stock_days">Dead stock — days since last activity</label>
+        <input type="number" id="dead_stock_days" name="dead_stock_days" min="1" max="3650" value="{{ settings.dead_stock_days }}" required />
+        <div class="help">
+          A SKU is flagged <b>dead stock</b> once this many days have passed with no sales since its
+          last purchase (or since it was first tracked, if it's never been purchased).
+        </div>
+      </div>
+      <div class="field">
+        <label for="trailing_days_target">Sales-pace window — trailing days</label>
+        <input type="number" id="trailing_days_target" name="trailing_days_target" min="1" max="3650" value="{{ settings.trailing_days_target }}" required />
+        <div class="help">
+          How many days of recent sales history "days of cover" is averaged over. A wider window
+          smooths out one unusually strong or weak month; a narrower one reacts faster to recent changes.
+        </div>
+      </div>
+      <div class="settings-actions">
+        <button class="btn btn-primary" type="submit" id="save-btn">Save</button>
+        <span class="settings-updated" id="settings-updated">
+          {% if settings.updated_at %}Last changed {{ settings.updated_at }}{% else %}Using built-in defaults — never changed{% endif %}
+        </span>
+      </div>
+    </form>
+  </div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById('settings-form').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const form = ev.currentTarget;
+  const btn = document.getElementById('save-btn');
+  const fields = ['low_stock_days', 'overstock_days', 'trailing_days_target', 'dead_stock_days'];
+  const body = {};
+  for (const f of fields) {
+    const input = form.elements[f];
+    const value = Number(input.value);
+    if (!Number.isInteger(value) || value < 1 || value > 3650) {
+      toast(`${input.previousElementSibling ? input.previousElementSibling.textContent : f} must be a whole number between 1 and 3650.`, 'error');
+      input.focus();
+      return;
+    }
+    body[f] = value;
+  }
+
+  btn.disabled = true;
+  const original = btn.textContent;
+  btn.textContent = 'Saving…';
+  try {
+    const saved = await api('/api/settings', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    toast('Settings saved — the dashboard will reflect these on next load.', 'success');
+    document.getElementById('settings-updated').textContent = `Last changed ${saved.updated_at}`;
+  } catch (e) {
+    toast(e.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+});
+</script>
+{% endblock %}
