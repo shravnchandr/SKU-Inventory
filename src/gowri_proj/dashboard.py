@@ -26,6 +26,7 @@ def _sanitize(obj):
 
 STATUS_LABELS = {
     "out_of_stock": "Out of stock",
+    "returned": "Returned",
     "dead_stock": "Dead stock",
     "low_stock": "Low stock",
     "overstock": "Overstock",
@@ -33,6 +34,7 @@ STATUS_LABELS = {
 }
 STATUS_COLOR_VAR = {
     "out_of_stock": "--status-critical",
+    "returned": "--status-neutral",
     "dead_stock": "--status-serious",
     "low_stock": "--status-warning",
     "overstock": "--series-1",
@@ -48,6 +50,7 @@ def _status_blurbs(thresholds: dict) -> dict[str, str]:
     dead_desc = f"{dead} days" if dead != 90 else "3+ months"
     return {
         "out_of_stock": "Zero on hand — can't fulfil an order today.",
+        "returned": "Zero on hand, nothing sold — stock was sent back, not sold through.",
         "low_stock": f"Selling well but under {low} days of cover left.",
         "dead_stock": f"Stock on hand, nothing sold since it was last purchased ({dead_desc}).",
         "overstock": f"Over {over} days of cover — capital tied up.",
@@ -134,6 +137,10 @@ def build_payload(
     table_columns: list[tuple[str, str]] = []
     dead_stock_table_columns: list[tuple[str, str]] = []
     if include_tables:
+        # "returned" is intentionally not a table here — it's aggregate-only
+        # (status_breakdown's count/value), grouped with "healthy" as
+        # information rather than an actionable, per-SKU list. See
+        # STATUS_ORDER's comment in analysis.py for why.
         tables = {
             "out_of_stock": _round_records(summary.out_of_stock),
             "low_stock": _round_records(summary.low_stock),

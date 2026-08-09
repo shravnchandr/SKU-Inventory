@@ -19,6 +19,18 @@ def test_negative_stock_is_also_out_of_stock():
     assert _status(closing_stock=-1, is_dead=False, days_of_cover=10) == "out_of_stock"
 
 
+def test_zero_stock_with_a_return_and_nothing_sold_is_returned_not_out_of_stock():
+    # Stock left via a return/write-off (is_returned=True), not a sale —
+    # a deliberate "don't reorder this" signal, distinct from "sold out."
+    assert _status(closing_stock=0, is_dead=False, days_of_cover=float("inf"), is_returned=True) == "returned"
+
+
+def test_zero_stock_without_a_return_is_still_out_of_stock():
+    # is_returned defaults to False — existing callers/behavior unaffected.
+    assert _status(closing_stock=0, is_dead=False, days_of_cover=5) == "out_of_stock"
+    assert _status(closing_stock=0, is_dead=False, days_of_cover=5, is_returned=False) == "out_of_stock"
+
+
 def test_dead_beats_low_and_overstock():
     assert _status(closing_stock=5, is_dead=True, days_of_cover=1) == "dead_stock"
     assert _status(closing_stock=5, is_dead=True, days_of_cover=9999) == "dead_stock"

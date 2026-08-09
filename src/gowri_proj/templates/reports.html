@@ -42,6 +42,12 @@
   .health-warn { color: var(--status-warning); }
   table.problem-files th, table.problem-files td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--gridline); font-size: var(--text-base); }
   table.problem-files th { color: var(--text-muted); font-weight: 600; font-size: var(--text-xs); }
+
+  .catalog-summary { font-size: var(--text-md); color: var(--text-secondary); margin-bottom: 14px; }
+  .catalog-warn { display: flex; align-items: flex-start; gap: 8px; font-size: var(--text-md); color: var(--status-warning); margin-top: 14px; }
+  table.unmatched-skus th, table.unmatched-skus td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--gridline); font-size: var(--text-base); }
+  table.unmatched-skus th { color: var(--text-muted); font-weight: 600; font-size: var(--text-xs); }
+  table.unmatched-skus td.num { text-align: right; font-variant-numeric: tabular-nums; }
 </style>
 {% endblock %}
 
@@ -77,20 +83,7 @@
     <div class="card-sub" id="health-refresh"></div>
     <div id="health-gaps"></div>
     <div id="health-problems"></div>
-  </div>
-
-  <div class="card" id="quality-card" style="display:none; border-color: var(--status-warning)">
-    <h2>⚠ Data quality — <span id="quality-count"></span></h2>
-    <div class="card-sub">
-      Rows with impossible values in the imported files (e.g. positive stock with negative value, or
-      negative stock/sales) — not altered, just flagged so a bad export doesn't quietly skew totals or trends.
-    </div>
-    <div class="table-scroll" style="max-height:240px">
-      <table class="data-table">
-        <thead><tr><th>Period</th><th>Brand</th><th>SKU</th><th>Issue</th><th>Opening</th><th>Purchased</th><th>Sold</th><th>Closing</th><th>Value (₹)</th></tr></thead>
-        <tbody id="quality-tbody"></tbody>
-      </table>
-    </div>
+    <div id="health-churn"></div>
   </div>
 
   <div class="card">
@@ -103,17 +96,31 @@
       <input type="file" id="file-input" multiple accept=".xls,.xlsx" />
     </div>
     <div class="upload-queue" id="upload-queue"></div>
+
+    <details class="card-collapsible" id="card-item-catalog" style="margin-top:18px">
+      <summary>
+        <span style="font-weight:600;font-size:var(--text-base)">Item code list <span style="color:var(--text-muted);font-weight:400">(optional)</span></span>
+        <span class="disclosure-icon" aria-hidden="true">▸</span>
+      </summary>
+      <div class="card-collapsible-body">
+        <div class="card-sub">Your POS system's master item list — a stable code per item that keeps working even when a product's name changes on a stock statement. Upload it here so a renamed or vanished SKU (flagged above, in Import health) can be checked against it. Not something you need to touch often.</div>
+        <div id="catalog-status"></div>
+        <div class="dropzone" id="dropzone-catalog">
+          <div class="dz-icon">📇</div>
+          <div class="dz-title" id="dropzone-catalog-title">Drag the item list here, or click to browse</div>
+          <div class="dz-sub">.xls or .xlsx — replaces the previous list</div>
+          <input type="file" id="file-input-catalog" accept=".xls,.xlsx" />
+        </div>
+        <div class="upload-queue" id="upload-queue-catalog"></div>
+        <div id="catalog-unmatched"></div>
+      </div>
+    </details>
   </div>
 
   <div class="card">
     <h2>Imported reports</h2>
-    <div class="card-sub">The dashboard uses the most recent period for current stock, and recent periods for the sales-pace trend.</div>
-    <table class="reports-table" id="reports-table">
-      <thead>
-        <tr><th>Period</th><th class="num">Days</th><th class="num">SKUs</th><th>Source file</th><th>Imported</th><th></th></tr>
-      </thead>
-      <tbody id="reports-tbody"></tbody>
-    </table>
+    <div class="card-sub">The dashboard uses the most recent period for current stock, and recent periods for the sales-pace trend. Grouped by financial year — click a year to expand it.</div>
+    <div id="reports-groups"></div>
   </div>
   {% endif %}
 {% endblock %}
@@ -136,23 +143,73 @@ function fmtDateTime(iso) {
   return new Date(iso.replace(' ', 'T') + 'Z').toLocaleString('en-IN', { day: '2-digit', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
 }
 
-function renderReportsTable() {
-  const tbody = document.getElementById('reports-tbody');
-  if (!tbody) return;
-  tbody.innerHTML = REPORTS.map(r => `
-    <tr data-id="${r.id}">
-      <td>${fmtDate(r.period_start)} – ${fmtDate(r.period_end)}</td>
-      <td class="num">${r.period_days}</td>
-      <td class="num">${r.sku_count.toLocaleString('en-IN')}</td>
-      <td>${escapeHtml(r.source_filename || '–')}</td>
-      <td>${fmtDateTime(r.imported_at) || '–'}</td>
-      <td style="text-align:right"><button class="btn btn-sm btn-danger" data-remove="${r.id}" type="button">Remove</button></td>
-    </tr>
-  `).join('') || `<tr><td colspan="6" class="empty-note">Nothing imported yet.</td></tr>`;
+// Indian financial year (Apr-Mar), matching sync.fy_folder() server-side —
+// same grouping the uploads/ folder itself now uses (see the upload flow).
+function fyOf(periodStartIso) {
+  const d = new Date(periodStartIso);
+  const y = d.getUTCFullYear(), m = d.getUTCMonth() + 1;
+  return m >= 4 ? y : y - 1;
+}
 
-  tbody.querySelectorAll('[data-remove]').forEach(btn => {
+function renderReportsTable() {
+  const container = document.getElementById('reports-groups');
+  if (!container) return;
+  if (!REPORTS.length) {
+    container.innerHTML = `<div class="empty-note">Nothing imported yet.</div>`;
+    return;
+  }
+
+  // One collapsible section per financial year — this list only grows over
+  // time, and most of it (older years) is rarely what anyone's looking at
+  // day to day. Most recent year open by default, the rest a click away
+  // (state remembered per year via the same localStorage mechanism as
+  // every other collapsible card).
+  const groups = new Map();
+  REPORTS.forEach(r => {
+    const fy = fyOf(r.period_start);
+    if (!groups.has(fy)) groups.set(fy, []);
+    groups.get(fy).push(r);
+  });
+  const fyKeys = Array.from(groups.keys()).sort((a, b) => b - a);
+
+  container.innerHTML = fyKeys.map((fy, i) => {
+    const rows = groups.get(fy).slice().sort((a, b) => new Date(a.period_start) - new Date(b.period_start));
+    const label = `FY ${fy}–${String(fy + 1).slice(-2)}`;
+    return `
+      <details class="card-collapsible" id="card-reports-fy-${fy}" ${i === 0 ? 'open' : ''}>
+        <summary>
+          <span style="font-weight:600;font-size:var(--text-base)">${label}
+            <span style="color:var(--text-muted);font-weight:400">(${rows.length} report${rows.length === 1 ? '' : 's'})</span>
+          </span>
+          <span class="disclosure-icon" aria-hidden="true">▸</span>
+        </summary>
+        <div class="card-collapsible-body">
+          <table class="reports-table">
+            <thead>
+              <tr><th>Period</th><th class="num">Days</th><th class="num">SKUs</th><th>Source file</th><th>Imported</th><th></th></tr>
+            </thead>
+            <tbody>${rows.map(r => `
+              <tr data-id="${r.id}">
+                <td>${fmtDate(r.period_start)} – ${fmtDate(r.period_end)}</td>
+                <td class="num">${r.period_days}</td>
+                <td class="num">${r.sku_count.toLocaleString('en-IN')}</td>
+                <td>${escapeHtml(r.source_filename || '–')}</td>
+                <td>${fmtDateTime(r.imported_at) || '–'}</td>
+                <td style="text-align:right"><button class="btn btn-sm btn-danger" data-remove="${r.id}" type="button">Remove</button></td>
+              </tr>`).join('')}
+            </tbody>
+          </table>
+        </div>
+      </details>`;
+  }).join('');
+
+  container.querySelectorAll('[data-remove]').forEach(btn => {
     btn.addEventListener('click', () => removeReport(Number(btn.dataset.remove)));
   });
+  // These <details> are built dynamically, same situation as dashboard.html's
+  // dead-stock aging tiles — base.html's own initCollapsibles() ran before
+  // this script block and couldn't have seen them yet.
+  initCollapsibles();
 }
 renderReportsTable();
 
@@ -162,15 +219,27 @@ async function loadImportHealth() {
   if (!healthCard) return;
   try {
     const data = await api('/api/import-health');
+    const churn = data.sku_churn || {
+      new_skus: [], new_total: 0, vanished_skus: [], vanished_total: 0,
+      likely_renames: [], renames_total: 0, previous_period_end: null,
+    };
+    const unmatched = data.unmatched_skus || { total: 0, items: [] };
     const hasGaps = data.missing_months.length || data.coverage_gaps.length;
     const hasProblems = data.problem_files.length > 0;
-    const issueCount = data.missing_months.length + data.coverage_gaps.length + data.problem_files.length;
+    // SKU churn since the last import, and (if a catalog's been uploaded)
+    // names it can't find — bundled into the same "worth a look" count
+    // rather than one issue per changed SKU, so a big rename batch reads as
+    // one thing to check, not fifty.
+    const hasChurn = (churn.new_total + churn.vanished_total) > 0;
+    const hasUnmatched = unmatched.total > 0;
+    const issueCount = data.missing_months.length + data.coverage_gaps.length + data.problem_files.length
+      + (hasChurn ? 1 : 0) + (hasUnmatched ? 1 : 0);
 
     // The card only takes up space on the page when there's actually
     // something to look at — same conditional-hide pattern as the Data
     // Quality card below. Most months this'll just be the pill.
     pill.style.display = '';
-    if (!hasGaps && !hasProblems) {
+    if (!hasGaps && !hasProblems && !hasChurn && !hasUnmatched) {
       pill.style.background = getComputedStyle(document.documentElement).getPropertyValue('--status-good').trim();
       pill.textContent = '✓ Import health good';
       healthCard.style.display = 'none';
@@ -217,6 +286,43 @@ async function loadImportHealth() {
           </tbody>
         </table>`;
     }
+
+    const churnEl = document.getElementById('health-churn');
+    if (!churn.previous_period_end) {
+      // Fewer than two reports imported yet — nothing to compare, so say
+      // nothing rather than a premature "all clear."
+      churnEl.innerHTML = '';
+    } else {
+      const rows = [];
+      if (!hasChurn) {
+        const renameNote = churn.renames_total
+          ? ` (${churn.renames_total} name${churn.renames_total === 1 ? '' : 's'} changed slightly — e.g. a "(NON)" tag — nothing to check)`
+          : '';
+        rows.push(`<div class="health-row health-ok"><span class="icon">✓</span> No unexplained SKU changes since your last import${renameNote}.</div>`);
+      } else {
+        const parts = [];
+        if (churn.new_total) parts.push(`${churn.new_total} new`);
+        if (churn.vanished_total) parts.push(`${churn.vanished_total} vanished`);
+        rows.push(`
+          <div class="health-row health-warn">
+            <span class="icon">⚠</span>
+            ${parts.join(', ')} SKU${(churn.new_total + churn.vanished_total) === 1 ? '' : 's'} since your last import, with no obvious match on the other side.
+            <a href="#card-item-catalog" id="jump-to-catalog" style="margin-left:4px">Check your item code list →</a>
+          </div>`);
+        if (churn.renames_total) {
+          rows.push(`<div class="health-row" style="color:var(--text-muted)"><span class="icon">·</span> ${churn.renames_total} other name change${churn.renames_total === 1 ? '' : 's'} looked like the same item (e.g. a "(NON)" tag) — not counted above.</div>`);
+        }
+      }
+      churnEl.innerHTML = rows.join('');
+      document.getElementById('jump-to-catalog')?.addEventListener('click', (ev) => {
+        ev.preventDefault();
+        const details = document.getElementById('card-item-catalog');
+        details.open = true;
+        details.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    }
+
+    renderCatalogCard(data.item_catalog, unmatched);
   } catch (e) {
     // Still say something rather than silently showing nothing — a failed
     // check isn't the same as "everything's fine," and looked identical to
@@ -230,42 +336,65 @@ async function loadImportHealth() {
 }
 loadImportHealth();
 
-async function loadDataQuality() {
-  const card = document.getElementById('quality-card');
-  if (!card) return;
-  try {
-    const data = await api('/api/data-quality');
-    if (!data.issues.length) {
-      card.style.display = 'none';
-      return;
-    }
-    card.style.display = '';
-    document.getElementById('quality-count').textContent =
-      `${data.issues.length} issue${data.issues.length === 1 ? '' : 's'} found`;
-    document.getElementById('quality-tbody').innerHTML = data.issues.map(i => `
-      <tr>
-        <td style="text-align:left">${escapeHtml(i.period_label)}</td>
-        <td style="text-align:left">${escapeHtml(i.brand)}</td>
-        <td style="text-align:left">${escapeHtml(i.sku)}</td>
-        <td style="text-align:left;color:var(--status-critical)">${escapeHtml(i.issue)}</td>
-        <td>${fmtNum(i.opening_stock)}</td>
-        <td>${fmtNum(i.purchase)}</td>
-        <td>${fmtNum(i.sales)}</td>
-        <td>${fmtNum(i.closing_stock)}</td>
-        <td>${fmtINR(i.value)}</td>
-      </tr>`).join('');
-  } catch (e) {
-    card.style.display = 'none';
+// The collapsed "Item code list" section: whether a catalog has been
+// imported, and — if so — which currently-stocked SKUs don't match anything
+// in it. Collapsed by default and tucked under "Upload a new month" — this
+// isn't something to touch often, so it doesn't get top-of-page space; the
+// SKU-churn check above (health-churn) is what actually prompts a visit
+// here, by linking straight to it when a rename looks likely.
+function renderCatalogCard(catalog, unmatched) {
+  const statusEl = document.getElementById('catalog-status');
+  const titleEl = document.getElementById('dropzone-catalog-title');
+  const unmatchedEl = document.getElementById('catalog-unmatched');
+  if (!statusEl) return;
+
+  if (!catalog) {
+    statusEl.innerHTML = '';
+    titleEl.textContent = 'Drag the item list here, or click to browse';
+    unmatchedEl.innerHTML = '';
+    return;
   }
+
+  titleEl.textContent = 'Drag a refreshed item list here to replace it';
+  statusEl.innerHTML = `<div class="catalog-summary">Last updated ${fmtDateTime(catalog.imported_at) || '–'} · ${catalog.item_count.toLocaleString('en-IN')} items</div>`;
+
+  const total = unmatched.total || 0;
+  const items = unmatched.items || [];
+  if (!total) {
+    unmatchedEl.innerHTML = `<div class="health-row health-ok"><span class="icon">✓</span> Every currently-stocked SKU matches an item in the list.</div>`;
+    return;
+  }
+
+  const shownNote = items.length < total ? ` (showing the top ${items.length.toLocaleString('en-IN')} by value)` : '';
+  unmatchedEl.innerHTML = `
+    <div class="catalog-warn"><span class="icon">⚠</span> ${total.toLocaleString('en-IN')} stocked SKU${total === 1 ? '' : 's'} don't match any code in your item list${shownNote} — the list may be stale (re-export it from your POS system) or these may be genuinely new items.</div>
+    <details class="card-collapsible" id="card-unmatched-skus">
+      <summary>
+        <span style="font-weight:600;font-size:var(--text-base)">Unmatched SKUs</span>
+        <span class="disclosure-icon" aria-hidden="true">▸</span>
+      </summary>
+      <div class="card-collapsible-body">
+        <table class="unmatched-skus" style="width:100%">
+          <thead><tr><th>Brand</th><th>SKU</th><th class="num">Closing stock</th><th class="num">Value</th></tr></thead>
+          <tbody>${items.map(u => `
+            <tr>
+              <td>${escapeHtml(u.brand || '–')}</td>
+              <td>${escapeHtml(u.sku)}</td>
+              <td class="num">${u.closing_stock.toLocaleString('en-IN')}</td>
+              <td class="num">₹${u.value.toLocaleString('en-IN')}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+      </div>
+    </details>`;
+  initCollapsibles();
 }
-loadDataQuality();
 
 async function refreshReportsFromServer() {
   const data = await api('/api/reports');
   REPORTS = data.reports;
   loadImportHealth();
-  loadDataQuality();
-  if (document.getElementById('reports-tbody')) {
+  if (document.getElementById('reports-groups')) {
     renderReportsTable();
   } else if (REPORTS.length) {
     // We were on the empty onboarding state and now have data — reload the page shell.
@@ -319,10 +448,13 @@ document.getElementById('refresh-btn')?.addEventListener('click', async (ev) => 
 });
 
 // ---------- upload (drag & drop + click to browse) ----------
-(function () {
-  const dz = document.getElementById('dropzone');
-  const input = document.getElementById('file-input');
-  const queue = document.getElementById('upload-queue');
+// Shared by both dropzones on this page (monthly stock statements, and the
+// item code list below) — same staging/status-row behavior, different
+// endpoint and success message.
+function setupDropzone({ dzId, inputId, queueId, endpoint, onSuccess, afterEach }) {
+  const dz = document.getElementById(dzId);
+  const input = document.getElementById(inputId);
+  const queue = document.getElementById(queueId);
   if (!dz) return;
 
   dz.addEventListener('click', () => input.click());
@@ -347,9 +479,9 @@ document.getElementById('refresh-btn')?.addEventListener('click', async (ev) => 
       const form = new FormData();
       form.append('file', file);
       try {
-        const data = await api('/api/upload', { method: 'POST', body: form });
+        const data = await api(endpoint, { method: 'POST', body: form });
         row.classList.add('ok');
-        row.querySelector('.status').textContent = `✓ ${data.period_start} to ${data.period_end} · ${data.sku_count.toLocaleString('en-IN')} SKUs`;
+        row.querySelector('.status').textContent = onSuccess(data);
         toast(`Imported ${file.name}`, 'success');
       } catch (e) {
         row.classList.add('err');
@@ -357,8 +489,22 @@ document.getElementById('refresh-btn')?.addEventListener('click', async (ev) => 
         toast(`${file.name}: ${e.message}`, 'error');
       }
     }
-    await refreshReportsFromServer();
+    if (afterEach) await afterEach();
   }
-})();
+}
+
+setupDropzone({
+  dzId: 'dropzone', inputId: 'file-input', queueId: 'upload-queue',
+  endpoint: '/api/upload',
+  onSuccess: data => `✓ ${data.period_start} to ${data.period_end} · ${data.sku_count.toLocaleString('en-IN')} SKUs`,
+  afterEach: refreshReportsFromServer,
+});
+
+setupDropzone({
+  dzId: 'dropzone-catalog', inputId: 'file-input-catalog', queueId: 'upload-queue-catalog',
+  endpoint: '/api/upload-item-list',
+  onSuccess: data => `✓ ${data.item_count.toLocaleString('en-IN')} items`,
+  afterEach: loadImportHealth,
+});
 </script>
 {% endblock %}

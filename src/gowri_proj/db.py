@@ -82,6 +82,28 @@ CREATE TABLE IF NOT EXISTS settings (
     version INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- The POS system's master item list: a stable internal `code` per item,
+-- mapped to its *current* product name/brand/HSN. Names in the monthly
+-- stock statements drift over time (renames, re-labeling); this table has
+-- no shared key with those statements, so it can't auto-fix a rename, but
+-- it can flag a currently-stocked SKU name that no longer matches anything
+-- here at all. Whole-table replace on every import (see import_item_catalog)
+-- since there's only ever one "current" catalog, not one per period.
+CREATE TABLE IF NOT EXISTS item_catalog (
+    code TEXT PRIMARY KEY,
+    brand TEXT,
+    product_name TEXT NOT NULL,
+    packing TEXT,
+    mrp REAL,
+    by_rate REAL,
+    tax_pct REAL,
+    hsn TEXT,
+    long_name TEXT,
+    imported_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_item_catalog_product ON item_catalog(product_name);
 """
 
 
@@ -324,3 +346,40 @@ def upsert_settings(
         (low_stock_days, overstock_days, trailing_days_target, dead_stock_days),
     )
     return get_settings(conn)
+
+
+def import_item_catalog(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
+    """Replace the whole item_catalog with `df` (one row per code). There's
+    only ever one "current" catalog — unlike reports, which each represent a
+    distinct period and accumulate — so every import is a full replace, not
+    an accumulation.
+    """
+    conn.execute("DELETE FROM item_catalog")
+    cols = [
+        "code", "brand", "product_name", "packing", "mrp", "by_rate",
+        "tax_pct", "hsn", "long_name",
+    ]
+    df[cols].to_sql("item_catalog", conn, if_exists="append", index=False)
+    return len(df)
+
+
+def get_item_catalog_meta(conn: sqlite3.Connection) -> dict | None:
+    """When the catalog was last imported and how many items it has, or None
+    if nothing has been imported yet.
+    """
+    row = conn.execute("SELECT MAX(imported_at), COUNT(*) FROM item_catalog").fetchone()
+    if row is None or row[1] == 0:
+        return None
+    return {"imported_at": row[0], "item_count": row[1]}
+
+
+def list_item_catalog_names(conn: sqlite3.Connection) -> set[str]:
+    """Every distinct product_name and long_name in the catalog, for matching
+    against currently-stocked SKU names. Just strings — cheap enough not to
+    round-trip the whole table for this check.
+    """
+    rows = conn.execute(
+        "SELECT product_name FROM item_catalog "
+        "UNION SELECT long_name FROM item_catalog"
+    ).fetchall()
+    return {r[0] for r in rows if r[0]}

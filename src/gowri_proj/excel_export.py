@@ -25,6 +25,9 @@ def _display_columns(trailing_days: int) -> dict[str, str]:
     }
 
 
+# "returned" deliberately has no sheet — same call as the dashboard's
+# static, non-clickable row: aggregate count/value only (in the Summary
+# sheet below via STATUS_ORDER), no per-SKU list.
 SHEETS = [
     ("out_of_stock", "Out of Stock"),
     ("low_stock", "Low Stock"),
@@ -43,6 +46,7 @@ def _prep(df: pd.DataFrame, display_columns: dict[str, str]) -> pd.DataFrame:
 def _summary_frame(summary: InventorySummary) -> pd.DataFrame:
     labels = {
         "out_of_stock": "Out of Stock",
+        "returned": "Returned",
         "low_stock": "Low Stock",
         "dead_stock": "Dead Stock",
         "overstock": "Overstock",

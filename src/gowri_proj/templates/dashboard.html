@@ -164,40 +164,37 @@ function colsFor(key) {
 const statusTabsEl = document.getElementById('status-tabs');
 const panelsEl = document.getElementById('tab-panels');
 
-// "Healthy" has no tab of its own (nothing actionable to click into — no
-// DATA.tables.healthy), but it's usually the majority of the catalog by
-// count and value, so leaving it out entirely would mean nothing on the
-// page ever states it. Rendered as a 5th, non-clickable row instead of a
-// tab. Scaled against the true max across all 5 statuses (not just the 4
-// tabs) so the bars stay proportionally honest — healthy is typically the
-// longest bar here, which is the point.
-const healthyMeta = statusMeta('healthy');
-const maxCount = Math.max(...TAB_DEFS.map(t => statusMeta(t.key).count), healthyMeta ? healthyMeta.count : 0, 1);
-statusTabsEl.innerHTML = TAB_DEFS.map((t, i) => {
-  const s = statusMeta(t.key);
+// "Healthy" and "returned" have no tab of their own — nothing actionable to
+// click into for either (no DATA.tables entry, no per-SKU list): healthy
+// stock needs no attention, and a returned/written-off SKU already got its
+// one deliberate action (sending it back), so re-listing it as if it still
+// needs a decision would be noise, not help. Both render as static,
+// non-clickable rows instead of tabs, healthy then returned, scaled
+// against the true max across all 6 statuses (not just the 4 tabs) so the
+// bars stay proportionally honest.
+const staticKeys = ['healthy', 'returned'];
+const maxCount = Math.max(
+  ...TAB_DEFS.map(t => statusMeta(t.key).count),
+  ...staticKeys.map(k => statusMeta(k)?.count || 0),
+  1
+);
+function statusRowHtml(s, { clickable, active } = {}) {
   const color = css.getPropertyValue(s.color_var).trim() || '#2a78d6';
   const pct = (100 * s.count / maxCount).toFixed(1);
+  const cls = clickable ? ` status-item-clickable${active ? ' active' : ''}` : ' status-item-static';
+  const attrs = clickable ? `data-tab="${s.status}" tabindex="0" role="button" aria-pressed="${active}"` : '';
   return `
-    <div class="status-item status-item-clickable${i === 0 ? ' active' : ''}" data-tab="${t.key}"
-         tabindex="0" role="button" aria-pressed="${i === 0}">
+    <div class="status-item${cls}" ${attrs}>
       <span class="status-swatch" style="background:${color}"></span>
       <span class="status-name">${s.label}</span>
       <span class="status-track"><span class="status-fill" style="width:${pct}%;background:${color}"></span></span>
       <span class="status-nums">${fmtNum(s.count)} SKUs · ${fmtINR(s.value)}</span>
       <span class="status-blurb">${s.blurb}</span>
     </div>`;
-}).join('') + (healthyMeta ? (() => {
-  const color = css.getPropertyValue(healthyMeta.color_var).trim() || '#2a78d6';
-  const pct = (100 * healthyMeta.count / maxCount).toFixed(1);
-  return `
-    <div class="status-item status-item-static">
-      <span class="status-swatch" style="background:${color}"></span>
-      <span class="status-name">${healthyMeta.label}</span>
-      <span class="status-track"><span class="status-fill" style="width:${pct}%;background:${color}"></span></span>
-      <span class="status-nums">${fmtNum(healthyMeta.count)} SKUs · ${fmtINR(healthyMeta.value)}</span>
-      <span class="status-blurb">${healthyMeta.blurb}</span>
-    </div>`;
-})() : '');
+}
+statusTabsEl.innerHTML =
+  TAB_DEFS.map((t, i) => statusRowHtml(statusMeta(t.key), { clickable: true, active: i === 0 })).join('') +
+  staticKeys.map(k => statusMeta(k)).filter(Boolean).map(s => statusRowHtml(s)).join('');
 
 panelsEl.innerHTML = TAB_DEFS.map((t, i) => `
   <div class="tab-panel${i === 0 ? ' active' : ''}" id="panel-${t.key}">
@@ -227,14 +224,21 @@ panelsEl.innerHTML = TAB_DEFS.map((t, i) => `
 initCollapsibles();
 
 function selectTab(key) {
-  statusTabsEl.querySelectorAll('.status-item').forEach(el => {
+  // Scoped to .status-item-clickable, not the broader .status-item — the
+  // Healthy row is a .status-item too (just non-interactive), and it has
+  // no data-tab. Matching it here would toggle aria-pressed onto a row
+  // that isn't a button; matching it in the listener binding below would
+  // be worse — clicking it would call selectTab(undefined), which matches
+  // zero real panel ids and blanks every action table until a real row is
+  // clicked again.
+  statusTabsEl.querySelectorAll('.status-item-clickable').forEach(el => {
     const active = el.dataset.tab === key;
     el.classList.toggle('active', active);
     el.setAttribute('aria-pressed', String(active));
   });
   panelsEl.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `panel-${key}`));
 }
-statusTabsEl.querySelectorAll('.status-item').forEach(el => {
+statusTabsEl.querySelectorAll('.status-item-clickable').forEach(el => {
   el.addEventListener('click', () => selectTab(el.dataset.tab));
   el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectTab(el.dataset.tab); } });
 });

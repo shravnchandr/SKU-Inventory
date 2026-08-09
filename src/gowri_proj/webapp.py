@@ -19,16 +19,19 @@ from .analysis import (
     THRESHOLD_DAYS_MAX,
     THRESHOLD_DAYS_MIN,
     brand_history,
-    find_data_quality_issues,
     find_import_gaps,
+    find_sku_churn,
+    find_unmatched_skus,
     format_days_of_cover,
     search_skus,
     sku_history,
     summarize_history,
 )
 from .dashboard import _sanitize, build_payload
-from .parser import parse_stock_statement
-from .sync import sync_folder
+from .parser import parse_item_list, parse_stock_statement
+from .sync import fy_folder, sync_folder
+
+ITEM_CATALOG_FILENAME = "item_catalog.xlsx"
 
 DEFAULT_DB_PATH = db.DEFAULT_DB_PATH
 DEFAULT_UPLOADS_DIR = "uploads"
@@ -115,10 +118,27 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
         g.current_data = result
         return result
 
+    def company_name() -> str | None:
+        # Reuse the route's own get_current_data() call for free if it
+        # already ran this request (Dashboard/Trends always call it) — but
+        # don't trigger get_current_data() ourselves just to answer this.
+        # Reports/Settings don't need a full summarize_history() over every
+        # SKU (the expensive part, and the thing invalidated on every
+        # upload/refresh/remove/settings-save — exactly the actions that
+        # land back on these two pages) merely to print a company name in
+        # the nav bar; list_reports() is ~180x cheaper for that alone.
+        if "current_data" in g:
+            _, summary, _ = g.current_data
+            return summary.meta.company if summary else None
+        with db.connect(app.config["DB_PATH"]) as conn:
+            reports = db.list_reports(conn)
+        if reports.empty:
+            return None
+        return reports.iloc[-1]["company"]
+
     @app.context_processor
     def inject_globals():
-        _, summary, _ = get_current_data()
-        return {"company": summary.meta.company if summary else None, "csrf_token": app.config["CSRF_TOKEN"]}
+        return {"company": company_name(), "csrf_token": app.config["CSRF_TOKEN"]}
 
     @app.before_request
     def check_csrf():
@@ -249,6 +269,8 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
             gaps = find_import_gaps(reports_df)
             last_refresh = db.last_refresh_time(conn)
             problems_df = db.list_watched_files_problems(conn)
+            catalog_meta = db.get_item_catalog_meta(conn)
+            catalog_names = db.list_item_catalog_names(conn) if catalog_meta else set()
         problem_files = [
             {
                 "filename": r["filename"],
@@ -258,19 +280,23 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
             }
             for _, r in problems_df.iterrows()
         ]
+        all_entries, summary, _ = get_current_data()
+        unmatched_skus = {"total": 0, "items": []}
+        if catalog_names and summary is not None:
+            unmatched_skus = find_unmatched_skus(summary.enriched, catalog_names)
+        sku_churn = find_sku_churn(all_entries) if all_entries is not None else {
+            "new_skus": [], "new_total": 0, "vanished_skus": [], "vanished_total": 0,
+            "likely_renames": [], "renames_total": 0, "previous_period_end": None,
+        }
         return jsonify(
             last_refresh=last_refresh,
             missing_months=gaps["missing_months"],
             coverage_gaps=gaps["coverage_gaps"],
             problem_files=problem_files,
+            item_catalog=catalog_meta,
+            unmatched_skus=unmatched_skus,
+            sku_churn=sku_churn,
         )
-
-    @app.get("/api/data-quality")
-    def api_data_quality():
-        all_entries, summary, _ = get_current_data()
-        if summary is None:
-            return jsonify(issues=[])
-        return jsonify(_sanitize({"issues": find_data_quality_issues(all_entries)}))
 
     @app.get("/settings")
     def settings():
@@ -319,14 +345,16 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
         uploads_dir = Path(app.config["UPLOADS_DIR"])
         uploads_dir.mkdir(parents=True, exist_ok=True)
 
-        # Stage the upload under a dotfile name in the same directory (so the
-        # eventual move is a same-filesystem, atomic replace) and validate it
-        # there *before* it ever becomes uploads/<filename>. That ordering
-        # matters: if we wrote straight to the real filename first, a
-        # rejected upload (conflicting period, duplicate, bad file) would
-        # still have overwritten whatever the existing report's provenance
-        # pointed at, on every single attempt — including retries after a
-        # rejection, which a "reject once" check can't catch.
+        # Stage the upload under a dotfile name in uploads_dir itself (so the
+        # eventual move is a same-filesystem, atomic replace — true even
+        # into a subfolder below it, atomicity only needs source/dest on the
+        # same filesystem, not the same directory) and validate it there
+        # *before* it ever becomes a real file. That ordering matters: if we
+        # wrote straight to the real filename first, a rejected upload
+        # (conflicting period, duplicate, bad file) would still have
+        # overwritten whatever the existing report's provenance pointed at,
+        # on every single attempt — including retries after a rejection,
+        # which a "reject once" check can't catch.
         fd, tmp_name = tempfile.mkstemp(prefix=".upload-", suffix=Path(filename).suffix, dir=uploads_dir)
         tmp_path = Path(tmp_name)
         try:
@@ -344,8 +372,16 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
                     error="No SKU rows could be read from this file — it may not be a stock statement export."
                 ), 422
 
+            # File it under the same financial-year subfolder a manual
+            # upload/rescan would use (uploads/2627/..., matching every
+            # historical file already organized that way) instead of
+            # dropping it flat in uploads/ — and track it under that same
+            # relative path, so a later "Rescan uploads folder" recognizes
+            # it as the file it already knows about rather than a new one.
+            rel_name = f"{fy_folder(meta.period_start)}/{filename}"
+
             with db.connect(app.config["DB_PATH"]) as conn:
-                known = db.get_watched_file(conn, filename)
+                known = db.get_watched_file(conn, rel_name)
                 old_report = db.find_reused_filename_conflict(conn, known, meta)
                 if old_report is not None:
                     return jsonify(
@@ -363,14 +399,15 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
                     ), 409
 
                 # Validated — now it's safe to make this the real file.
-                dest = uploads_dir / filename
+                dest = uploads_dir / rel_name
+                dest.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(tmp_path, dest)
                 stat = dest.stat()
                 import_result = db.import_report(
-                    conn, df, meta, filename, replace=(existing_report_id is not None)
+                    conn, df, meta, rel_name, replace=(existing_report_id is not None)
                 )
                 db.upsert_watched_file(
-                    conn, filename, stat.st_size, int(stat.st_mtime), import_result.report_id, "imported"
+                    conn, rel_name, stat.st_size, int(stat.st_mtime), import_result.report_id, "imported"
                 )
 
             return jsonify(
@@ -381,6 +418,52 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
             )
         finally:
             tmp_path.unlink(missing_ok=True)  # no-op if os.replace already moved it into place
+
+    @app.post("/api/upload-item-list")
+    def api_upload_item_list():
+        file = request.files.get("file")
+        if not file or not file.filename:
+            return jsonify(error="No file received."), 400
+        filename = secure_filename(file.filename)
+        if not filename.lower().endswith((".xls", ".xlsx")):
+            return jsonify(error="Only .xls or .xlsx files are supported."), 400
+
+        uploads_dir = Path(app.config["UPLOADS_DIR"])
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+
+        # Same stage-then-atomic-replace pattern as /api/upload — validate
+        # before this can overwrite the last known-good catalog. Unlike
+        # monthly reports, there's only ever one "current" catalog (no
+        # period, no FY folder), so it always lands at the same canonical
+        # path and each successful upload unconditionally replaces it.
+        fd, tmp_name = tempfile.mkstemp(prefix=".upload-", suffix=Path(filename).suffix, dir=uploads_dir)
+        tmp_path = Path(tmp_name)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                file.save(f)
+
+            try:
+                df, meta = parse_item_list(str(tmp_path))
+            except Exception as e:  # noqa: BLE001 — surfaced to the user, not a server error
+                return jsonify(error=str(e)), 422
+            if df.empty:
+                return jsonify(
+                    error="No item rows could be read from this file — it may not be an item list export."
+                ), 422
+
+            dest = uploads_dir / ITEM_CATALOG_FILENAME
+            os.replace(tmp_path, dest)
+
+            with db.connect(app.config["DB_PATH"]) as conn:
+                item_count = db.import_item_catalog(conn, df)
+
+            return jsonify(
+                status="imported",
+                item_count=item_count,
+                as_of=meta.as_of.isoformat() if meta.as_of else None,
+            )
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
     @app.post("/api/refresh")
     def api_refresh():

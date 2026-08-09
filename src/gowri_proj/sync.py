@@ -14,12 +14,25 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 
 from . import db
 from .parser import parse_stock_statement
 
 SUPPORTED_SUFFIXES = {".xls", ".xlsx"}
+
+
+def fy_folder(d: date) -> str:
+    """Indian financial-year folder name (Apr-Mar) for a given date, e.g.
+    any date from Apr 2025 to Mar 2026 -> "2526". Matches the convention
+    already used for every historical file sitting in uploads/ (organized
+    by hand into one subfolder per FY) — used to auto-file new direct
+    uploads (webapp.py's /api/upload) into the same structure instead of
+    dropping them flat in the folder root.
+    """
+    fy_start_year = d.year if d.month >= 4 else d.year - 1
+    return f"{fy_start_year % 100:02d}{(fy_start_year + 1) % 100:02d}"
 
 
 def _is_candidate(path: Path, folder_path: Path) -> bool:

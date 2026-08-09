@@ -33,6 +33,7 @@ sales activity:
 """
 from __future__ import annotations
 
+import difflib
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -68,10 +69,15 @@ def _period_label(period_start: date, period_end: date) -> str:
     return f"{period_start.strftime('%b %Y')}–{period_end.strftime('%b %Y')}"
 
 
-# Canonical status list, in priority order (matches _status()'s if/elif
-# chain below) — the one place this list is defined; dashboard.py, main.py,
-# and excel_export.py all import it rather than repeating the literal.
-STATUS_ORDER = ["out_of_stock", "low_stock", "dead_stock", "overstock", "healthy"]
+# Canonical status list. dashboard.py, main.py, and excel_export.py all
+# import it rather than repeating the literal. Priority order for the
+# first five matches _status()'s if/elif chain below; "returned" is a
+# special case — same priority as out_of_stock for *classification*
+# purposes (see _status docstring), but listed last here since, unlike the
+# other five, it's purely informational (aggregate count/value only, no
+# per-SKU table) and displayed grouped with "healthy" rather than among
+# the actionable buckets.
+STATUS_ORDER = ["out_of_stock", "low_stock", "dead_stock", "overstock", "healthy", "returned"]
 
 
 def format_days_of_cover(value: float) -> float | None:
@@ -85,11 +91,16 @@ def _status(
     closing_stock: float,
     is_dead: bool,
     days_of_cover: float,
+    is_returned: bool = False,
     low_stock_days: int = LOW_STOCK_DAYS,
     overstock_days: int = OVERSTOCK_DAYS,
 ) -> str:
     if closing_stock <= 0:
-        return "out_of_stock"
+        # Zero stock with nothing sold, but stock actually left (a return/
+        # write-off, not a sale) in the trailing window — a deliberate call
+        # not to reorder, not the same signal as "sold through, might need
+        # restocking." See is_returned's computation in summarize_history.
+        return "returned" if is_returned else "out_of_stock"
     if is_dead:
         return "dead_stock"
     if days_of_cover < low_stock_days:
@@ -307,12 +318,29 @@ def summarize_history(
     ].copy()
 
     trailing_agg = (
-        trailing_entries.sort_values("period_end")
+        trailing_entries.assign(
+            # "Purchased" means "stock that arrived," not just the paid-purchase
+            # column — purchase_free (scheme/bonus units) and other_receipt
+            # (e.g. inter-branch transfers, corrections) are real incoming
+            # stock too. Leaving them out understated how much actually came
+            # in, which could make a large other_receipt-fed SKU look like it
+            # returned more than it ever had (opening + purchase alone) —
+            # it didn't; the stock arrived through a channel this column
+            # wasn't counting. Sales_free/other_issue stay separate: they
+            # don't feed "Sold" (that number specifically drives the sales
+            # pace behind days-of-cover/dead-stock, and folding in giveaways
+            # or write-offs would change classifications, not just display).
+            total_purchase=trailing_entries["purchase"]
+            + trailing_entries["purchase_free"]
+            + trailing_entries["other_receipt"]
+        )
+        .sort_values("period_end")
         .groupby("sku")
         .agg(
             trailing_opening=("opening_stock", "first"),
-            trailing_purchase=("purchase", "sum"),
+            trailing_purchase=("total_purchase", "sum"),
             trailing_sales=("sales", "sum"),
+            trailing_other_issue=("other_issue", "sum"),
         )
         .reset_index()
     )
@@ -329,10 +357,17 @@ def summarize_history(
     merged["trailing_opening"] = merged["trailing_opening"].fillna(0.0)
     merged["trailing_purchase"] = merged["trailing_purchase"].fillna(0.0)
     merged["trailing_sales"] = merged["trailing_sales"].fillna(0.0)
+    merged["trailing_other_issue"] = merged["trailing_other_issue"].fillna(0.0)
     merged = merged.merge(dead_flags, on="sku", how="left")
     merged["is_dead"] = merged["is_dead"].fillna(False)
     merged["days_since_activity"] = merged["days_since_activity"].fillna(0).astype(int)
     merged["daily_sales"] = merged["trailing_sales"] / trailing_days if trailing_days > 0 else 0.0
+    # Zero stock, nothing sold, but stock actually left via a return/write-off
+    # (other_issue) somewhere in the trailing window — this SKU wasn't sold
+    # through, it was deliberately sent back because it wasn't moving. That's
+    # a different signal than "sold out, might need restocking" (out_of_stock)
+    # even though both end up at zero on the shelf — see _status()'s docstring.
+    merged["is_returned"] = (merged["trailing_sales"] == 0) & (merged["trailing_other_issue"] > 0)
     # Vectorized rather than merged.apply(..., axis=1) — a row-wise Python
     # loop over every current SKU (15k+ today) was the remaining hot spot
     # in this module once _compute_dead_stock got bounded (see
@@ -344,19 +379,25 @@ def summarize_history(
     )
     merged["status"] = np.select(
         [
+            (merged["closing_stock"] <= 0) & merged["is_returned"],
             merged["closing_stock"] <= 0,
             merged["is_dead"],
             merged["days_of_cover"] < low_stock_days,
             merged["days_of_cover"] > overstock_days,
         ],
-        ["out_of_stock", "dead_stock", "low_stock", "overstock"],
+        ["returned", "out_of_stock", "dead_stock", "low_stock", "overstock"],
         default="healthy",
     )
     # Aliased to the plain names downstream table/column code already
     # expects (dead-stock classification uses its own since-purchase window
     # internally, above — unaffected by this).
     merged = merged.rename(
-        columns={"trailing_sales": "sales", "trailing_opening": "opening_stock", "trailing_purchase": "purchase"}
+        columns={
+            "trailing_sales": "sales",
+            "trailing_opening": "opening_stock",
+            "trailing_purchase": "purchase",
+            "trailing_other_issue": "other_issue",
+        }
     )
 
     status_counts = merged["status"].value_counts().to_dict()
@@ -467,6 +508,164 @@ def search_skus(enriched: pd.DataFrame, query: str, limit: int = 50) -> list[dic
         }
         for _, r in matches.iterrows()
     ]
+
+
+
+# Below this similarity ratio (difflib.SequenceMatcher on the raw names,
+# same brand only), a "new" and "vanished" name are unrelated products, not
+# the same item under a slightly different name — checked against this
+# app's real data: same-item pairs (a "(NON)" suffix toggled on/off marking
+# an item as non-moving/do-not-reorder, or a stray space, or a unit written
+# "10G" one month and "10GM" the next) cluster at 0.75+, while unrelated
+# SKUs that happen to vanish/appear the same month top out around 0.6.
+# 0.75 sits in the gap between the two.
+RENAME_SIMILARITY_THRESHOLD = 0.75
+
+
+def _pair_likely_renames(
+    vanished_rows: dict[str, dict], new_rows: dict[str, dict]
+) -> tuple[list[dict], set[str], set[str]]:
+    """Greedily pair each vanished name with its most-similar same-brand new
+    name, for pairs that clear RENAME_SIMILARITY_THRESHOLD — almost always
+    the same item still, just relisted under a slightly different name (a
+    "(NON)" non-moving tag added/removed, a unit spelled out differently),
+    not a real rename. A pharmacy's export naturally re-lists a huge
+    fraction of "changes" every month as exactly this kind of noise; pairing
+    them up here means the real new/vanished counts (and the "go check your
+    item list" nudge they drive) only reflect actual product turnover.
+
+    Returns (likely_pairs, paired_vanished_names, paired_new_names).
+    """
+    candidates = []
+    for v_name, v_row in vanished_rows.items():
+        for n_name, n_row in new_rows.items():
+            if v_row["brand"] != n_row["brand"]:
+                continue
+            score = difflib.SequenceMatcher(None, v_name, n_name).ratio()
+            if score >= RENAME_SIMILARITY_THRESHOLD:
+                candidates.append((score, v_name, n_name))
+    candidates.sort(key=lambda c: c[0], reverse=True)
+
+    paired_vanished: set[str] = set()
+    paired_new: set[str] = set()
+    pairs = []
+    for score, v_name, n_name in candidates:
+        if v_name in paired_vanished or n_name in paired_new:
+            continue  # each name pairs with at most one match, highest-scoring first
+        paired_vanished.add(v_name)
+        paired_new.add(n_name)
+        pairs.append(
+            {
+                "brand": new_rows[n_name]["brand"],
+                "old_name": v_name,
+                "new_name": n_name,
+                "closing_stock": new_rows[n_name]["closing_stock"],
+                "value": new_rows[n_name]["value"],
+            }
+        )
+    pairs.sort(key=lambda p: -p["value"])
+    return pairs, paired_vanished, paired_new
+
+
+def find_sku_churn(all_entries: pd.DataFrame, limit: int = 50) -> dict:
+    """SKU names that appeared or disappeared between the two most recently
+    imported reports — after pairing off names that are almost certainly
+    the same item relisted slightly differently (see _pair_likely_renames),
+    so a "(NON)" tag toggling or a unit spelled out differently doesn't
+    read as "1 new + 1 vanished."
+
+    What's left after pairing is the actual trigger for "go check your item
+    list": a genuinely new or discontinued-looking name, unrelated to
+    anything on the other side, shows up here directly — without needing
+    the catalog at all — the catalog only helps *resolve* it once flagged.
+    Deliberately scoped to the latest two reports, not all-time history:
+    churn from three years ago was already noticed (or wasn't) three years
+    ago, and re-flagging it forever would just be noise.
+    """
+    empty = {
+        "new_skus": [], "new_total": 0,
+        "vanished_skus": [], "vanished_total": 0,
+        "likely_renames": [], "renames_total": 0,
+        "previous_period_end": None,
+    }
+    if all_entries.empty:
+        return empty
+
+    period_ends = all_entries[["report_id", "period_end"]].drop_duplicates().sort_values("period_end")
+    if len(period_ends) < 2:
+        return empty
+
+    latest_id, previous_id = period_ends.iloc[-1]["report_id"], period_ends.iloc[-2]["report_id"]
+    latest = all_entries[all_entries["report_id"] == latest_id]
+    previous = all_entries[all_entries["report_id"] == previous_id]
+
+    latest_skus = set(latest["sku"])
+    previous_skus = set(previous["sku"])
+    new_names = latest_skus - previous_skus
+    vanished_names = previous_skus - latest_skus
+
+    def _row_map(df: pd.DataFrame, names: set[str]) -> dict[str, dict]:
+        subset = df[df["sku"].isin(names)]
+        return {
+            r["sku"]: {
+                "brand": r["brand"],
+                "closing_stock": float(r["closing_stock"]),
+                "value": round(float(r["value"]), 2),
+            }
+            for _, r in subset.iterrows()
+        }
+
+    new_rows = _row_map(latest, new_names)
+    vanished_rows = _row_map(previous, vanished_names)
+    rename_pairs, paired_vanished, paired_new = _pair_likely_renames(vanished_rows, new_rows)
+
+    def _rows(rows: dict[str, dict], names: set[str]) -> list[dict]:
+        items = sorted(
+            ({"sku": name, **rows[name]} for name in names), key=lambda r: -r["value"]
+        )
+        return items[:limit]
+
+    true_new = new_names - paired_new
+    true_vanished = vanished_names - paired_vanished
+    return {
+        "new_skus": _rows(new_rows, true_new),
+        "new_total": len(true_new),
+        "vanished_skus": _rows(vanished_rows, true_vanished),
+        "vanished_total": len(true_vanished),
+        "likely_renames": rename_pairs[:limit],
+        "renames_total": len(rename_pairs),
+        "previous_period_end": period_ends.iloc[-2]["period_end"].date().isoformat(),
+    }
+
+
+def find_unmatched_skus(enriched: pd.DataFrame, catalog_names: set[str], limit: int = 100) -> dict:
+    """Currently-stocked SKUs whose name doesn't appear anywhere in the item
+    catalog (product_name or long_name, exact match after stripping) —
+    scoped to the *current* snapshot only, same as every other action list
+    in this app. A non-empty result means either the item list export is
+    stale (re-export it from the POS system) or the item genuinely isn't in
+    the master catalog yet — either way, it's a name the catalog can't
+    vouch for.
+
+    Returns ``{"total": N, "items": [...]}`` — ``total`` is the *true* count
+    (so the UI can say "632 SKUs don't match" even when only the top `limit`,
+    by value, are actually listed) and ``items`` is that display-capped list.
+    """
+    if not catalog_names or enriched.empty:
+        return {"total": 0, "items": []}
+    current_names = enriched["sku"].str.strip()
+    mask = ~current_names.isin(catalog_names)
+    unmatched = enriched[mask].sort_values("value", ascending=False)
+    items = [
+        {
+            "brand": r["brand"],
+            "sku": r["sku"],
+            "closing_stock": float(r["closing_stock"]),
+            "value": round(float(r["value"]), 2),
+        }
+        for _, r in unmatched.head(limit).iterrows()
+    ]
+    return {"total": int(mask.sum()), "items": items}
 
 
 def find_import_gaps(reports: pd.DataFrame) -> dict:

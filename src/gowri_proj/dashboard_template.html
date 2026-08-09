@@ -518,8 +518,24 @@ function renderLineChart(containerId, { labels, series, yFormat, showLegend }) {
   }).join('');
 
   const labelStep = n > 7 ? Math.ceil(n / 7) : 1;
+  // Every labelStep-th point gets a label, plus the last one always — but a
+  // newly-added point (e.g. a partial month's report) shifts which index is
+  // "last" without changing labelStep, so the forced final label can land
+  // right next to the previous regularly-spaced one and collide with it —
+  // drop that second-to-last label when they'd be closer together than a
+  // full step. Mirrors base.html's renderLineChart (this is a standalone
+  // duplicate copy of that same function).
+  const shownLabels = new Set();
+  for (let i = 0; i < n; i += labelStep) shownLabels.add(i);
+  shownLabels.add(n - 1);
+  const sortedShown = Array.from(shownLabels).sort((a, b) => a - b);
+  if (sortedShown.length >= 2) {
+    const last = sortedShown[sortedShown.length - 1];
+    const secondLast = sortedShown[sortedShown.length - 2];
+    if (last - secondLast < labelStep) shownLabels.delete(secondLast);
+  }
   const xLabels = labels.map((lab, i) => {
-    if (i % labelStep !== 0 && i !== n - 1) return '';
+    if (!shownLabels.has(i)) return '';
     return `<text class="lc-axis-label" x="${xAt(i)}" y="${H - 8}" text-anchor="middle">${lab}</text>`;
   }).join('');
 
@@ -565,8 +581,22 @@ function renderLineChart(containerId, { labels, series, yFormat, showLegend }) {
       series.map(s => `<div class="lc-tt-row"><span class="lc-tt-swatch" style="background:${s.color}"></span>${s.name ? escapeHtml(s.name) + ': ' : ''}${yFormat(s.values[i])}</div>`).join('');
     const rect = svg.getBoundingClientRect();
     const scale = rect.width / W;
-    tip.style.left = `${x * scale}px`;
+    const leftPx = x * scale;
+    tip.style.left = `${leftPx}px`;
     tip.style.top = `${yAt(Math.max(...series.map(s => s.values[i] || 0))) * scale}px`;
+    // Keep the tooltip inside the chart near the first/last point instead
+    // of letting half of it get clipped by the container — see base.html's
+    // renderLineChart for the matching fix (this is a standalone duplicate
+    // copy of that same function).
+    const margin = 8;
+    const halfWidth = tip.offsetWidth / 2;
+    let shiftX = 0;
+    if (leftPx - halfWidth < margin) {
+      shiftX = margin - (leftPx - halfWidth);
+    } else if (leftPx + halfWidth > rect.width - margin) {
+      shiftX = (rect.width - margin) - (leftPx + halfWidth);
+    }
+    tip.style.transform = `translate(calc(-50% + ${shiftX}px), -110%)`;
     tip.style.opacity = 1;
   }
   function hide() {
@@ -645,34 +675,31 @@ function statusMeta(key) {
 const statusTabsEl = document.getElementById('status-tabs');
 const panelsEl = document.getElementById('tab-panels');
 
-// "Healthy" gets a 5th, non-clickable row — see dashboard.html's comment
-// for the full reasoning.
-const healthyMeta = statusMeta('healthy');
-const maxCount = Math.max(...TAB_DEFS.map(t => statusMeta(t.key).count), healthyMeta ? healthyMeta.count : 0, 1);
-statusTabsEl.innerHTML = TAB_DEFS.map((t, i) => {
-  const s = statusMeta(t.key);
+// "Healthy" and "returned" get static, non-clickable rows — see
+// dashboard.html's comment for the full reasoning.
+const staticKeys = ['healthy', 'returned'];
+const maxCount = Math.max(
+  ...TAB_DEFS.map(t => statusMeta(t.key).count),
+  ...staticKeys.map(k => statusMeta(k)?.count || 0),
+  1
+);
+function statusRowHtml(s, { clickable, active } = {}) {
   const color = css.getPropertyValue(s.color_var).trim() || '#2a78d6';
   const pct = (100 * s.count / maxCount).toFixed(1);
+  const cls = clickable ? ` status-item-clickable${active ? ' active' : ''}` : ' status-item-static';
+  const attrs = clickable ? `data-tab="${s.status}"` : '';
   return `
-    <div class="status-item status-item-clickable${i === 0 ? ' active' : ''}" data-tab="${t.key}">
+    <div class="status-item${cls}" ${attrs}>
       <span class="status-swatch" style="background:${color}"></span>
       <span class="status-name">${s.label}</span>
       <span class="status-track"><span class="status-fill" style="width:${pct}%;background:${color}"></span></span>
       <span class="status-nums">${fmtNum(s.count)} SKUs · ${fmtINR(s.value)}</span>
       <span class="status-blurb">${s.blurb}</span>
     </div>`;
-}).join('') + (healthyMeta ? (() => {
-  const color = css.getPropertyValue(healthyMeta.color_var).trim() || '#2a78d6';
-  const pct = (100 * healthyMeta.count / maxCount).toFixed(1);
-  return `
-    <div class="status-item status-item-static">
-      <span class="status-swatch" style="background:${color}"></span>
-      <span class="status-name">${healthyMeta.label}</span>
-      <span class="status-track"><span class="status-fill" style="width:${pct}%;background:${color}"></span></span>
-      <span class="status-nums">${fmtNum(healthyMeta.count)} SKUs · ${fmtINR(healthyMeta.value)}</span>
-      <span class="status-blurb">${healthyMeta.blurb}</span>
-    </div>`;
-})() : '');
+}
+statusTabsEl.innerHTML =
+  TAB_DEFS.map((t, i) => statusRowHtml(statusMeta(t.key), { clickable: true, active: i === 0 })).join('') +
+  staticKeys.map(k => statusMeta(k)).filter(Boolean).map(s => statusRowHtml(s)).join('');
 
 panelsEl.innerHTML = TAB_DEFS.map((t, i) => `
   <div class="tab-panel${i === 0 ? ' active' : ''}" id="panel-${t.key}">
@@ -696,10 +723,14 @@ panelsEl.innerHTML = TAB_DEFS.map((t, i) => `
 `).join('');
 
 function selectTab(key) {
-  statusTabsEl.querySelectorAll('.status-item').forEach(el => el.classList.toggle('active', el.dataset.tab === key));
+  // .status-item-clickable, not .status-item — the Healthy row has no
+  // data-tab, and matching it in the listener binding below would make
+  // clicking it call selectTab(undefined), which matches no real panel id
+  // and blanks every action table.
+  statusTabsEl.querySelectorAll('.status-item-clickable').forEach(el => el.classList.toggle('active', el.dataset.tab === key));
   panelsEl.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `panel-${key}`));
 }
-statusTabsEl.querySelectorAll('.status-item').forEach(el => {
+statusTabsEl.querySelectorAll('.status-item-clickable').forEach(el => {
   el.addEventListener('click', () => selectTab(el.dataset.tab));
 });
 

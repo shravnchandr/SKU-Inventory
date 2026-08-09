@@ -26,6 +26,7 @@
     --status-warning:  #fab219;
     --status-serious:  #ec835a;
     --status-critical: #d03b3b;
+    --status-neutral:  #7c5cbf;
 
     /* UI accent — deliberately separate from --series-1. The chart palette
        is colorblind-validated and stays untouched; this is Apple's system
@@ -79,6 +80,7 @@
       --status-warning:  #fab219;
       --status-serious:  #ec835a;
       --status-critical: #e66767;
+      --status-neutral:  #9878cc;
 
       --accent:        #0a84ff;
       --accent-hover:  #2b95ff;
@@ -334,6 +336,7 @@
   .lc-legend-clickable { cursor: pointer; border-radius: 5px; padding: 2px 5px; margin: -2px -5px; transition: background var(--transition-fast), color var(--transition-fast); }
   .lc-legend-clickable:hover, .lc-legend-clickable:focus-visible { background: var(--page); color: var(--text-primary); }
   .lc-legend-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .lc-legend-item-hidden { opacity: 0.45; }
   .lc-tooltip {
     position: absolute; background: var(--text-primary); color: var(--surface-1);
     font-size: var(--text-sm); padding: 6px 10px; border-radius: var(--radius-sm); pointer-events: none;
@@ -615,101 +618,168 @@ function statusBadgeHtml(status) {
 
 // ---------- line chart (trend series) ----------
 // A small self-contained SVG line chart: gridlines, one line per series,
-// direct-labeled legend for 2+ series, and a shared crosshair + tooltip on hover.
-function renderLineChart(containerId, { labels, series, yFormat, showLegend, onLegendClick }) {
+// direct-labeled legend for 2+ series, and a shared crosshair + tooltip on
+// hover. Two independent, mutually-exclusive legend behaviors — a caller
+// uses at most one:
+//   - onLegendClick(series): clicking a legend item drills into that
+//     series (e.g. the top-5-brands trend chart opens the brand's modal).
+//   - toggleableLegend + defaultVisible: clicking a legend item shows/hides
+//     that line instead (e.g. a SKU's opening/purchased/sold/closing chart
+//     starting with only two of the four drawn, to cut visual noise, with
+//     the rest a click away). The Y axis rescales to whatever's currently
+//     visible, and at least one series always stays on.
+function renderLineChart(containerId, { labels, series, yFormat, showLegend, onLegendClick, toggleableLegend, defaultVisible }) {
   const el = document.getElementById(containerId);
   const W = 560, H = 220;
   const pad = { top: 14, right: 16, bottom: 28, left: 54 };
   const plotW = W - pad.left - pad.right;
   const plotH = H - pad.top - pad.bottom;
   const n = labels.length;
-
-  const maxVal = Math.max(1, ...series.flatMap(s => s.values.map(v => v || 0)));
-  const yMax = maxVal * 1.15;
   const xAt = i => (n <= 1 ? plotW / 2 : (i / (n - 1)) * plotW) + pad.left;
-  const yAt = v => pad.top + plotH - (Math.max(0, v || 0) / yMax) * plotH;
 
-  const gridCount = 4;
-  const gridlines = Array.from({ length: gridCount + 1 }, (_, i) => {
-    const v = (yMax / gridCount) * i;
-    const y = yAt(v);
-    return `<line class="lc-gridline" x1="${pad.left}" x2="${W - pad.right}" y1="${y}" y2="${y}" />` +
-      `<text class="lc-axis-label" x="${pad.left - 8}" y="${y + 3}" text-anchor="end">${yFormat(v)}</text>`;
-  }).join('');
+  let visible = new Set(defaultVisible && defaultVisible.length ? defaultVisible : series.map(s => s.name));
 
-  const labelStep = n > 7 ? Math.ceil(n / 7) : 1;
-  const xLabels = labels.map((lab, i) => {
-    if (i % labelStep !== 0 && i !== n - 1) return '';
-    return `<text class="lc-axis-label" x="${xAt(i)}" y="${H - 8}" text-anchor="middle">${lab}</text>`;
-  }).join('');
+  function draw() {
+    const activeSeries = toggleableLegend ? series.filter(s => visible.has(s.name)) : series;
+    const maxVal = Math.max(1, ...activeSeries.flatMap(s => s.values.map(v => v || 0)));
+    const yMax = maxVal * 1.15;
+    const yAt = v => pad.top + plotH - (Math.max(0, v || 0) / yMax) * plotH;
 
-  const lines = series.map(s => {
-    const d = s.values.map((v, i) => `${i === 0 ? 'M' : 'L'} ${xAt(i)} ${yAt(v)}`).join(' ');
-    const dots = s.values.map((v, i) =>
-      `<circle class="lc-dot" cx="${xAt(i)}" cy="${yAt(v)}" r="4" fill="${s.color}" />`
-    ).join('');
-    return `<path class="lc-line" d="${d}" stroke="${s.color}" /><g data-series="${escapeHtml(s.name)}">${dots}</g>`;
-  }).join('');
+    const gridCount = 4;
+    const gridlines = Array.from({ length: gridCount + 1 }, (_, i) => {
+      const v = (yMax / gridCount) * i;
+      const y = yAt(v);
+      return `<line class="lc-gridline" x1="${pad.left}" x2="${W - pad.right}" y1="${y}" y2="${y}" />` +
+        `<text class="lc-axis-label" x="${pad.left - 8}" y="${y + 3}" text-anchor="end">${yFormat(v)}</text>`;
+    }).join('');
 
-  const legend = showLegend
-    ? `<div class="lc-legend">${series.map((s, i) =>
-        `<div class="lc-legend-item${onLegendClick ? ' lc-legend-clickable' : ''}" ${onLegendClick ? `data-idx="${i}" tabindex="0" role="button"` : ''}>` +
-        `<span class="lc-legend-swatch" style="background:${s.color}"></span>${escapeHtml(s.name)}</div>`
-      ).join('')}</div>`
-    : '';
+    const labelStep = n > 7 ? Math.ceil(n / 7) : 1;
+    // Every labelStep-th point gets a label, plus the last one always (so
+    // the chart's right edge — "as of now" — is never unlabeled). But a
+    // newly-added point (e.g. a partial month's report) shifts which index
+    // is "last" without changing labelStep, so the forced final label can
+    // land right next to the previous regularly-spaced one and collide with
+    // it — drop that second-to-last label when they'd be closer together
+    // than a full step.
+    const shownLabels = new Set();
+    for (let i = 0; i < n; i += labelStep) shownLabels.add(i);
+    shownLabels.add(n - 1);
+    const sortedShown = Array.from(shownLabels).sort((a, b) => a - b);
+    if (sortedShown.length >= 2) {
+      const last = sortedShown[sortedShown.length - 1];
+      const secondLast = sortedShown[sortedShown.length - 2];
+      if (last - secondLast < labelStep) shownLabels.delete(secondLast);
+    }
+    const xLabels = labels.map((lab, i) => {
+      if (!shownLabels.has(i)) return '';
+      return `<text class="lc-axis-label" x="${xAt(i)}" y="${H - 8}" text-anchor="middle">${lab}</text>`;
+    }).join('');
 
-  el.innerHTML = `
-    ${legend}
-    <div class="line-chart-wrap">
-      <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
-        ${gridlines}
-        ${xLabels}
-        ${lines}
-        <line class="lc-crosshair" id="${containerId}-cross" x1="0" x2="0" y1="${pad.top}" y2="${pad.top + plotH}" />
-        <rect class="lc-hit" x="${pad.left}" y="${pad.top}" width="${plotW}" height="${plotH}"
-              data-chart="${containerId}" />
-      </svg>
-      <div class="lc-tooltip" id="${containerId}-tip"></div>
-    </div>`;
+    const lines = activeSeries.map(s => {
+      const d = s.values.map((v, i) => `${i === 0 ? 'M' : 'L'} ${xAt(i)} ${yAt(v)}`).join(' ');
+      const dots = s.values.map((v, i) =>
+        `<circle class="lc-dot" cx="${xAt(i)}" cy="${yAt(v)}" r="4" fill="${s.color}" />`
+      ).join('');
+      return `<path class="lc-line" d="${d}" stroke="${s.color}" /><g data-series="${escapeHtml(s.name)}">${dots}</g>`;
+    }).join('');
 
-  const svg = el.querySelector('svg');
-  const hit = el.querySelector('.lc-hit');
-  const cross = el.querySelector(`#${CSS.escape(containerId)}-cross`);
-  const tip = el.querySelector(`#${CSS.escape(containerId)}-tip`);
+    const clickableLegend = !!(onLegendClick || toggleableLegend);
+    const legend = showLegend
+      ? `<div class="lc-legend">${series.map((s, i) => {
+          const hidden = toggleableLegend && !visible.has(s.name);
+          return `<div class="lc-legend-item${clickableLegend ? ' lc-legend-clickable' : ''}${hidden ? ' lc-legend-item-hidden' : ''}" ` +
+            `${clickableLegend ? `data-idx="${i}" tabindex="0" role="button" aria-pressed="${!hidden}"` : ''}>` +
+            `<span class="lc-legend-swatch" style="background:${s.color}"></span>${escapeHtml(s.name)}</div>`;
+        }).join('')}</div>`
+      : '';
 
-  if (onLegendClick) {
-    el.querySelectorAll('.lc-legend-clickable').forEach(item => {
-      const handler = () => onLegendClick(series[Number(item.dataset.idx)]);
-      item.addEventListener('click', handler);
-      item.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); } });
+    el.innerHTML = `
+      ${legend}
+      <div class="line-chart-wrap">
+        <svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+          ${gridlines}
+          ${xLabels}
+          ${lines}
+          <line class="lc-crosshair" id="${containerId}-cross" x1="0" x2="0" y1="${pad.top}" y2="${pad.top + plotH}" />
+          <rect class="lc-hit" x="${pad.left}" y="${pad.top}" width="${plotW}" height="${plotH}"
+                data-chart="${containerId}" />
+        </svg>
+        <div class="lc-tooltip" id="${containerId}-tip"></div>
+      </div>`;
+
+    const svg = el.querySelector('svg');
+    const hit = el.querySelector('.lc-hit');
+    const cross = el.querySelector(`#${CSS.escape(containerId)}-cross`);
+    const tip = el.querySelector(`#${CSS.escape(containerId)}-tip`);
+
+    if (onLegendClick) {
+      el.querySelectorAll('.lc-legend-clickable').forEach(item => {
+        const handler = () => onLegendClick(series[Number(item.dataset.idx)]);
+        item.addEventListener('click', handler);
+        item.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); } });
+      });
+    } else if (toggleableLegend) {
+      el.querySelectorAll('.lc-legend-clickable').forEach(item => {
+        const s = series[Number(item.dataset.idx)];
+        const handler = () => {
+          if (visible.has(s.name)) {
+            if (visible.size <= 1) return; // always leave at least one line on
+            visible.delete(s.name);
+          } else {
+            visible.add(s.name);
+          }
+          draw();
+        };
+        item.addEventListener('click', handler);
+        item.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); } });
+      });
+    }
+
+    function showAt(i) {
+      const x = xAt(i);
+      cross.setAttribute('x1', x);
+      cross.setAttribute('x2', x);
+      cross.style.opacity = 1;
+      tip.innerHTML = `<div style="font-weight:600;margin-bottom:4px">${escapeHtml(labels[i])}</div>` +
+        activeSeries.map(s => `<div class="lc-tt-row"><span class="lc-tt-swatch" style="background:${s.color}"></span>${s.name ? escapeHtml(s.name) + ': ' : ''}${yFormat(s.values[i])}</div>`).join('');
+      const rect = svg.getBoundingClientRect();
+      const scale = rect.width / W;
+      const leftPx = x * scale;
+      tip.style.left = `${leftPx}px`;
+      tip.style.top = `${yAt(Math.max(...activeSeries.map(s => s.values[i] || 0))) * scale}px`;
+      // The tooltip is normally centered on the point (see .lc-tooltip's
+      // translate(-50%, ...) in base.html's <style>) — fine everywhere except
+      // near the first/last point, where half the box would land outside the
+      // chart and get clipped by the container instead of just overlapping
+      // the plot. Nudge it back in by whatever the overflow actually is,
+      // measured after the real content width is known (varies by series
+      // count/label length), rather than guessing a fixed offset.
+      const margin = 8;
+      const halfWidth = tip.offsetWidth / 2;
+      let shiftX = 0;
+      if (leftPx - halfWidth < margin) {
+        shiftX = margin - (leftPx - halfWidth);
+      } else if (leftPx + halfWidth > rect.width - margin) {
+        shiftX = (rect.width - margin) - (leftPx + halfWidth);
+      }
+      tip.style.transform = `translate(calc(-50% + ${shiftX}px), -110%)`;
+      tip.style.opacity = 1;
+    }
+    function hideTip() {
+      cross.style.opacity = 0;
+      tip.style.opacity = 0;
+    }
+    hit.addEventListener('mousemove', ev => {
+      const rect = svg.getBoundingClientRect();
+      const scale = W / rect.width;
+      const localX = (ev.clientX - rect.left) * scale - pad.left;
+      const i = n <= 1 ? 0 : Math.round((localX / plotW) * (n - 1));
+      showAt(Math.min(n - 1, Math.max(0, i)));
     });
+    hit.addEventListener('mouseleave', hideTip);
   }
 
-  function showAt(i) {
-    const x = xAt(i);
-    cross.setAttribute('x1', x);
-    cross.setAttribute('x2', x);
-    cross.style.opacity = 1;
-    tip.innerHTML = `<div style="font-weight:600;margin-bottom:4px">${escapeHtml(labels[i])}</div>` +
-      series.map(s => `<div class="lc-tt-row"><span class="lc-tt-swatch" style="background:${s.color}"></span>${s.name ? escapeHtml(s.name) + ': ' : ''}${yFormat(s.values[i])}</div>`).join('');
-    const rect = svg.getBoundingClientRect();
-    const scale = rect.width / W;
-    tip.style.left = `${x * scale}px`;
-    tip.style.top = `${yAt(Math.max(...series.map(s => s.values[i] || 0))) * scale}px`;
-    tip.style.opacity = 1;
-  }
-  function hide() {
-    cross.style.opacity = 0;
-    tip.style.opacity = 0;
-  }
-  hit.addEventListener('mousemove', ev => {
-    const rect = svg.getBoundingClientRect();
-    const scale = W / rect.width;
-    const localX = (ev.clientX - rect.left) * scale - pad.left;
-    const i = n <= 1 ? 0 : Math.round((localX / plotW) * (n - 1));
-    showAt(Math.min(n - 1, Math.max(0, i)));
-  });
-  hit.addEventListener('mouseleave', hide);
+  draw();
 }
 
 // ---------- SKU / brand detail panels ----------
@@ -754,12 +824,32 @@ function openSkuDetail(brand, sku) {
       </div>`;
 
     if (data.history.length >= 2) {
-      const color = getComputedStyle(document.documentElement).getPropertyValue('--series-1').trim();
+      // Fixed categorical order (not cycled) — same series/color always
+      // means the same measure across views, matching how the top-5-brands
+      // trend chart already assigns --series-1.."5".
+      const seriesColorVars = ['--series-1', '--series-2', '--series-3', '--series-4'];
+      const fields = [
+        ['Opening stock', 'opening_stock'],
+        ['Purchased', 'purchase'],
+        ['Sold', 'sales'],
+        ['Closing stock', 'closing_stock'],
+      ];
+      const css = getComputedStyle(document.documentElement);
       renderLineChart('sku-detail-chart', {
         labels: data.history.map(h => h.label),
-        series: [{ name: 'Closing stock', color, values: data.history.map(h => h.closing_stock) }],
+        series: fields.map(([name, key], i) => ({
+          name,
+          color: css.getPropertyValue(seriesColorVars[i]).trim(),
+          values: data.history.map(h => h[key]),
+        })),
         yFormat: fmtNum,
-        showLegend: false,
+        showLegend: true,
+        toggleableLegend: true,
+        // Purchased/Sold on by default — the pair that shows how the SKU is
+        // actually moving; Opening/Closing (mostly redundant with each other
+        // month to month) are a legend click away rather than cluttering
+        // the chart from the start.
+        defaultVisible: ['Purchased', 'Sold'],
       });
     } else {
       document.getElementById('sku-detail-chart').innerHTML =

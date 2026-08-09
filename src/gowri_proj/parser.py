@@ -102,6 +102,137 @@ def parse_meta(raw: pd.DataFrame) -> ReportMeta:
     return ReportMeta(company, location, period_start, period_end)
 
 
+@dataclass(frozen=True)
+class ItemListMeta:
+    company: str | None
+    location: str | None
+    as_of: date | None
+
+
+# Column positions in the raw "item list" sheet (a different export than the
+# stock statement — same headerless-grid read, different layout).
+IL_COL_CODE = 0
+IL_COL_PRODUCT = 1
+IL_COL_PACKING = 2
+IL_COL_MRP = 3
+IL_COL_BY_RATE = 4
+IL_COL_TAX_PCT = 5
+IL_COL_SP_RATE = 6
+IL_COL_HSN = 7
+IL_COL_LONG_NAME = 8
+
+ITEM_LIST_COLUMNS = [
+    "code",
+    "brand",
+    "product_name",
+    "packing",
+    "mrp",
+    "by_rate",
+    "tax_pct",
+    "hsn",
+    "long_name",
+]
+
+_ITEM_LIST_AS_OF_RE = re.compile(r"Item List as on (\d{2}/\d{2}/\d{4})")
+
+
+def parse_item_list_meta(raw: pd.DataFrame) -> ItemListMeta:
+    """Pull the company name, location, and "as on" date off the banner rows."""
+    company = None
+    location = None
+    as_of = None
+
+    for _, row in raw.head(10).iterrows():
+        texts = [v.strip() for v in row if isinstance(v, str) and v.strip()]
+        if not texts:
+            continue
+        text = texts[0]
+        if company is None:
+            company = text
+            continue
+        match = _ITEM_LIST_AS_OF_RE.search(text)
+        if match:
+            as_of = pd.to_datetime(match.group(1), format="%d/%m/%Y").date()
+        elif location is None:
+            location = text
+
+    return ItemListMeta(company, location, as_of)
+
+
+def parse_item_list(path: str, sheet_name: str = "Sheet2") -> tuple[pd.DataFrame, ItemListMeta]:
+    """Parse the "item list" POS export into a tidy, one-row-per-code DataFrame.
+
+    Structurally similar to the stock statement (brand-header rows interspersed
+    with item rows) but a different shape entirely — this maps a stable internal
+    `code` to the *current* product name/brand/HSN for every item ever set up in
+    the system, which is what lets renamed/re-labeled SKUs in the monthly stock
+    statements be flagged rather than silently mismatched.
+    """
+    raw = pd.read_excel(path, sheet_name=sheet_name, header=None)
+    meta = parse_item_list_meta(raw)
+
+    rows: list[dict] = []
+    current_brand: str | None = None
+    started = False
+
+    for _, row in raw.iterrows():
+        code = row[IL_COL_CODE]
+        has_code = code.strip() != "" if isinstance(code, str) else pd.notna(code)
+
+        if not started:
+            if str(code).strip() == "Code":
+                # As with parse_stock_statement's header check: verify a
+                # couple more cells are where expected before trusting fixed
+                # column positions for every row after this one.
+                if (
+                    str(row[IL_COL_PRODUCT]).strip() != "Product"
+                    or str(row[IL_COL_HSN]).strip() != "HSN"
+                ):
+                    raise ValueError(
+                        "Found the 'Code' header but the other columns don't match the "
+                        f"expected layout (expected 'Product' in column {IL_COL_PRODUCT + 1} "
+                        f"and 'HSN' in column {IL_COL_HSN + 1}, got {row[IL_COL_PRODUCT]!r} "
+                        f"and {row[IL_COL_HSN]!r}). The export template may have changed — "
+                        "check the file before re-importing."
+                    )
+                started = True
+            continue
+
+        name_cell = row[IL_COL_PRODUCT]
+        has_name = isinstance(name_cell, str) and name_cell.strip() != ""
+        if not has_code and not has_name:
+            continue  # blank separator row
+
+        if not has_name:
+            # A brand/category header row: only the code-ish column (the
+            # row's sole populated cell) is filled — e.g. "AKSIGEN" on its
+            # own row, followed by that brand's items each with a real code
+            # *and* a product name. A blank Product cell is what marks it as
+            # a header rather than an item, not a blank Code cell (both
+            # header and item rows have that column filled).
+            current_brand = str(code).strip()
+            continue
+
+        rows.append(
+            {
+                "code": str(code).strip(),
+                "brand": current_brand,
+                "product_name": str(name_cell).strip(),
+                "packing": str(row[IL_COL_PACKING]).strip() if isinstance(row[IL_COL_PACKING], str) else row[IL_COL_PACKING],
+                "mrp": row[IL_COL_MRP],
+                "by_rate": row[IL_COL_BY_RATE],
+                "tax_pct": row[IL_COL_TAX_PCT],
+                "hsn": str(row[IL_COL_HSN]).strip() if isinstance(row[IL_COL_HSN], str) else row[IL_COL_HSN],
+                "long_name": str(row[IL_COL_LONG_NAME]).strip() if isinstance(row[IL_COL_LONG_NAME], str) else row[IL_COL_LONG_NAME],
+            }
+        )
+
+    df = pd.DataFrame(rows, columns=ITEM_LIST_COLUMNS)
+    numeric_cols = ["mrp", "by_rate", "tax_pct"]
+    df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors="coerce")
+    return df, meta
+
+
 def parse_stock_statement(path: str) -> tuple[pd.DataFrame, ReportMeta]:
     """Parse the raw report into a tidy, one-row-per-SKU DataFrame plus metadata."""
     raw = load_raw(path)
