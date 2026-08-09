@@ -1,0 +1,191 @@
+{#
+  The "explore" page — how things are moving over time, and who's driving
+  it. Split out from the Dashboard (which stays a short "what needs action
+  today" page) so this deliberately-visited deep-dive doesn't add scroll to
+  the everyday glance. Both pages render the same build_payload() output
+  (see webapp.py's /trends route) — this page just reads a different subset
+  of it. See dashboard.html's header comment re: the standalone CLI export
+  copy at ../dashboard_template.html not sharing any of this markup/JS.
+#}
+{% extends "base.html" %}
+{% block title %}Trends{% endblock %}
+
+{% block head %}
+<style>
+  .bar-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; position: relative; }
+  .bar-row .bar-label {
+    width: 40%; flex: 0 0 40%; font-size: var(--text-base); color: var(--text-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .bar-track { flex: 1; position: relative; height: 16px; background: var(--gridline); border-radius: 4px; overflow: visible; }
+  .bar-fill { position: absolute; left: 0; top: 0; height: 100%; border-radius: 4px; min-width: 3px; }
+  .bar-value {
+    flex: 0 0 auto; min-width: 78px; text-align: right; font-size: var(--text-base);
+    font-variant-numeric: tabular-nums; color: var(--text-primary);
+  }
+  .bar-tooltip {
+    position: absolute; bottom: 100%; left: 40%; transform: translateY(-6px);
+    background: var(--text-primary); color: var(--surface-1);
+    font-size: var(--text-sm); padding: 4px 8px; border-radius: var(--radius-sm); white-space: nowrap;
+    opacity: 0; pointer-events: none; transition: opacity 0.1s; z-index: 5;
+  }
+  .bar-row:hover .bar-tooltip { opacity: 1; }
+  .bar-row-clickable {
+    cursor: pointer; border-radius: var(--radius-sm); margin: 0 -6px; padding-left: 6px; padding-right: 6px;
+    transition: background var(--transition-fast);
+  }
+  .bar-row-clickable:hover, .bar-row-clickable:focus-visible { background: var(--page); }
+  .bar-row-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+</style>
+{% endblock %}
+
+{% block content %}
+  <div class="page-head">
+    <div>
+      <h1>Trends</h1>
+      <div class="sub" id="hdr-sub"></div>
+    </div>
+    <a class="btn" href="{{ url_for('dashboard') }}">← Back to dashboard</a>
+  </div>
+
+  <details class="card card-collapsible" id="card-leaderboard" open>
+    <summary><h2 style="margin:0">Leaderboard</h2><span class="disclosure-icon" aria-hidden="true">▸</span></summary>
+    <div class="card-collapsible-body">
+      <div class="card-sub" id="leaderboard-sub"></div>
+      <div class="tabs" id="leaderboard-switch"></div>
+      <div id="chart-leaderboard"></div>
+    </div>
+  </details>
+
+  <details class="card card-collapsible" id="card-trend" open>
+    <summary><h2 style="margin:0">Trends across imported months</h2><span class="disclosure-icon" aria-hidden="true">▸</span></summary>
+    <div class="card-collapsible-body">
+      <div class="card-sub" id="trend-sub"></div>
+      <div id="trend-empty" class="trend-empty" style="display:none">
+        Import another month's stock statement to start seeing trends here.
+      </div>
+      <div id="trend-body">
+        <div class="grid-2">
+          <div>
+            <div class="chart-title">Inventory value at period end</div>
+            <div id="chart-trend-value"></div>
+          </div>
+          <div>
+            <div class="chart-title">Units sold per period</div>
+            <div id="chart-trend-units"></div>
+          </div>
+        </div>
+        <div style="margin-top:18px">
+          <div class="chart-title">Units sold per period — top 5 brands</div>
+          <div id="chart-trend-brands"></div>
+        </div>
+      </div>
+    </div>
+  </details>
+{% endblock %}
+
+{% block footer %}Generated locally from imported stock statements · <span id="footer-note"></span>{% endblock %}
+
+{% block scripts %}
+<script id="data" type="application/json">{{ payload | tojson }}</script>
+<script>
+const DATA = JSON.parse(document.getElementById('data').textContent);
+// fmtINR, fmtNum, renderLineChart, openSkuDetail, openBrandDetail, escapeHtml,
+// initCollapsibles are all defined once in base.html.
+const css = getComputedStyle(document.documentElement);
+
+document.getElementById('hdr-sub').textContent =
+  (DATA.meta.location ? DATA.meta.location + ' · ' : '') +
+  `As of ${DATA.meta.latest_period_end} · ${DATA.meta.report_count} report${DATA.meta.report_count === 1 ? '' : 's'} imported ` +
+  `(${DATA.meta.earliest_period_start} to ${DATA.meta.latest_period_end})`;
+document.getElementById('footer-note').textContent =
+  `${DATA.kpis.total_skus.toLocaleString('en-IN')} SKUs across ${DATA.kpis.total_brands.toLocaleString('en-IN')} brands`;
+
+// ---------- horizontal bar chart (single hue) ----------
+function renderBarChart(containerId, rows, valueFmt, onClick) {
+  const max = Math.max(...rows.map(r => r.value), 1);
+  const color = css.getPropertyValue('--series-1').trim();
+  const html = rows.map((r, i) => {
+    const pct = Math.max(2, (100 * r.value / max));
+    const label = escapeHtml(r.label);
+    return `
+      <div class="bar-row${onClick ? ' bar-row-clickable' : ''}" ${onClick ? `data-idx="${i}" tabindex="0" role="button"` : ''}>
+        <span class="bar-label">${label}</span>
+        <span class="bar-track"><span class="bar-fill" style="width:${pct}%;background:${color}"></span></span>
+        <span class="bar-value">${valueFmt(r.value)}</span>
+        <span class="bar-tooltip">${label}: ${valueFmt(r.value)}</span>
+      </div>`;
+  }).join('');
+  const el = document.getElementById(containerId);
+  el.innerHTML = html;
+  if (onClick) {
+    el.querySelectorAll('.bar-row-clickable').forEach(row => {
+      const handler = () => onClick(rows[Number(row.dataset.idx)]);
+      row.addEventListener('click', handler);
+      row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); } });
+    });
+  }
+}
+
+// ---------- leaderboard switcher ----------
+const LEADERBOARDS = [
+  { key: 'value', label: 'SKUs by value', sub: 'Highest-value individual items on the shelf.', rows: DATA.top_skus_by_value, valueFmt: fmtINR, onClick: r => openSkuDetail(r.brand, r.sku) },
+  { key: 'sales', label: 'SKUs by sales', sub: 'Highest-volume movers in the trailing window.', rows: DATA.top_skus_by_sales, valueFmt: fmtNum, onClick: r => openSkuDetail(r.brand, r.sku) },
+  { key: 'brand', label: 'Brands by value', sub: 'Where locked-up capital concentrates.', rows: DATA.top_brands_by_value, valueFmt: fmtINR, onClick: r => openBrandDetail(r.brand) },
+];
+const switchEl = document.getElementById('leaderboard-switch');
+switchEl.innerHTML = LEADERBOARDS.map((l, i) =>
+  `<button class="tab-btn${i === 0 ? ' active' : ''}" data-key="${l.key}" type="button">${l.label}</button>`
+).join('');
+function selectLeaderboard(key) {
+  const l = LEADERBOARDS.find(x => x.key === key);
+  switchEl.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.key === key));
+  document.getElementById('leaderboard-sub').textContent = l.sub;
+  renderBarChart('chart-leaderboard', l.rows, l.valueFmt, l.onClick);
+}
+switchEl.querySelectorAll('.tab-btn').forEach(b => b.addEventListener('click', () => selectLeaderboard(b.dataset.key)));
+selectLeaderboard('value');
+
+// ---------- trend section ----------
+(function () {
+  const t = DATA.trend;
+  const hasTrend = t.labels.length >= 2;
+  document.getElementById('trend-sub').textContent = hasTrend
+    ? `One point per imported report, ${t.labels[0]} through ${t.labels[t.labels.length - 1]}.`
+    : 'Only one report imported so far.';
+  document.getElementById('trend-empty').style.display = hasTrend ? 'none' : '';
+  document.getElementById('trend-body').style.display = hasTrend ? '' : 'none';
+  if (!hasTrend) return;
+
+  const seriesColor = css.getPropertyValue('--series-1').trim();
+  renderLineChart('chart-trend-value', {
+    labels: t.labels,
+    series: [{ name: 'Inventory value', color: seriesColor, values: t.inventory_value }],
+    yFormat: fmtINR,
+    showLegend: false,
+  });
+  renderLineChart('chart-trend-units', {
+    labels: t.labels,
+    series: [{ name: 'Units sold', color: seriesColor, values: t.units_sold }],
+    yFormat: fmtNum,
+    showLegend: false,
+  });
+
+  const brandColorVars = ['--series-1', '--series-2', '--series-3', '--series-4', '--series-5'];
+  const brandSeries = t.top_brands.map((brand, i) => ({
+    name: brand,
+    color: css.getPropertyValue(brandColorVars[i % brandColorVars.length]).trim(),
+    values: t.brand_units_sold[brand],
+  }));
+  if (brandSeries.length) {
+    renderLineChart('chart-trend-brands', {
+      labels: t.labels,
+      series: brandSeries,
+      yFormat: fmtNum,
+      showLegend: true,
+      onLegendClick: s => openBrandDetail(s.name),
+    });
+  }
+})();
+</script>
+{% endblock %}

@@ -63,7 +63,7 @@
   {% else %}
   <div class="page-head">
     <div>
-      <h1>Reports</h1>
+      <h1>Reports <span class="status-badge" id="health-pill" style="display:none"></span></h1>
       <div class="sub">{{ reports|length }} report{{ '' if reports|length == 1 else 's' }} imported · upload a new month below</div>
     </div>
     <div style="display:flex; gap:8px">
@@ -72,7 +72,7 @@
     </div>
   </div>
 
-  <div class="card" id="health-card">
+  <div class="card" id="health-card" style="display:none">
     <h2>Import health</h2>
     <div class="card-sub" id="health-refresh"></div>
     <div id="health-gaps"></div>
@@ -160,16 +160,34 @@ function fmtDateTimeLocal(iso) {
 
 async function loadImportHealth() {
   const healthCard = document.getElementById('health-card');
+  const pill = document.getElementById('health-pill');
   if (!healthCard) return;
   try {
     const data = await api('/api/import-health');
+    const hasGaps = data.missing_months.length || data.coverage_gaps.length;
+    const hasProblems = data.problem_files.length > 0;
+    const issueCount = data.missing_months.length + data.coverage_gaps.length + data.problem_files.length;
+
+    // The card only takes up space on the page when there's actually
+    // something to look at — same conditional-hide pattern as the Data
+    // Quality card below. Most months this'll just be the pill.
+    pill.style.display = '';
+    if (!hasGaps && !hasProblems) {
+      pill.style.background = getComputedStyle(document.documentElement).getPropertyValue('--status-good').trim();
+      pill.textContent = '✓ Import health good';
+      healthCard.style.display = 'none';
+    } else {
+      pill.style.background = getComputedStyle(document.documentElement).getPropertyValue('--status-warning').trim();
+      pill.textContent = `⚠ ${issueCount} issue${issueCount === 1 ? '' : 's'}`;
+      healthCard.style.display = '';
+    }
+
     const refreshedAt = fmtDateTimeLocal(data.last_refresh);
     document.getElementById('health-refresh').textContent = refreshedAt
       ? `Last refresh: ${refreshedAt}`
       : 'No refresh recorded yet — run a refresh (or upload a file) to start tracking this.';
 
     const gapsEl = document.getElementById('health-gaps');
-    const hasGaps = data.missing_months.length || data.coverage_gaps.length;
     if (!hasGaps) {
       gapsEl.innerHTML = `<div class="health-row health-ok"><span class="icon">✓</span> No gaps — every month between your earliest and latest import is covered.</div>`;
     } else {
@@ -202,7 +220,8 @@ async function loadImportHealth() {
         </table>`;
     }
   } catch (e) {
-    document.getElementById('health-refresh').textContent = `Couldn't load import health: ${e.message}`;
+    pill.style.display = 'none';
+    healthCard.style.display = 'none';
   }
 }
 loadImportHealth();

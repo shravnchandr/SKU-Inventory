@@ -1,11 +1,15 @@
 {#
   This is the Flask-rendered dashboard (server-backed: search, SKU/brand
-  drilldown modals, live settings). There is a second, standalone copy of
-  this UI at ../dashboard_template.html for the offline CLI export
-  (`main.py dashboard`) — it can't share Jinja/server routes so it
-  reimplements the same status blurbs, table sorting, and chart rendering
-  by hand. Nothing enforces parity between the two: a fix to a threshold
-  blurb, a rounding rule, or a table column here probably belongs in both.
+  drilldown modals, live settings) — the "monitor" page: what needs action
+  today. Trend charts and the leaderboard live on the separate Trends page
+  (templates/trends.html) instead, kept short deliberately.
+
+  There is a second, standalone copy of this UI at ../dashboard_template.html
+  for the offline CLI export (`main.py dashboard`) — it can't share Jinja/
+  server routes so it reimplements the same status blurbs, table sorting,
+  and chart rendering by hand. Nothing enforces parity between the two: a
+  fix to a threshold blurb, a rounding rule, or a table column here probably
+  belongs in both.
 #}
 {% extends "base.html" %}
 {% block title %}Dashboard{% endblock %}
@@ -14,31 +18,17 @@
 <style>
   .kpi-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 14px; }
 
-  .bar-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; position: relative; }
-  .bar-row .bar-label {
-    width: 40%; flex: 0 0 40%; font-size: var(--text-base); color: var(--text-secondary);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  /* ---------- "your move" strip ---------- */
+  .move-strip {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: 10px 16px; font-size: var(--text-md);
   }
-  .bar-track { flex: 1; position: relative; height: 16px; background: var(--gridline); border-radius: 4px; overflow: visible; }
-  .bar-fill { position: absolute; left: 0; top: 0; height: 100%; border-radius: 4px; min-width: 3px; }
-  .bar-value {
-    flex: 0 0 auto; min-width: 78px; text-align: right; font-size: var(--text-base);
-    font-variant-numeric: tabular-nums; color: var(--text-primary);
-  }
-  .bar-tooltip {
-    position: absolute; bottom: 100%; left: 40%; transform: translateY(-6px);
-    background: var(--text-primary); color: var(--surface-1);
-    font-size: var(--text-sm); padding: 4px 8px; border-radius: var(--radius-sm); white-space: nowrap;
-    opacity: 0; pointer-events: none; transition: opacity 0.1s; z-index: 5;
-  }
-  .bar-row:hover .bar-tooltip { opacity: 1; }
-  .bar-row-clickable {
-    cursor: pointer; border-radius: var(--radius-sm); margin: 0 -6px; padding-left: 6px; padding-right: 6px;
-    transition: background var(--transition-fast);
-  }
-  .bar-row-clickable:hover, .bar-row-clickable:focus-visible { background: var(--page); }
-  .bar-row-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .move-strip .status-swatch { width: 8px; height: 8px; }
+  .move-strip a { color: var(--accent); font-weight: 600; text-decoration: none; }
+  .move-strip a:hover { color: var(--accent-hover); }
 
+  /* ---------- status list (also doubles as the action-tab switcher) ---------- */
   .status-list { display: flex; flex-direction: column; gap: 10px; }
   .status-item { display: flex; align-items: center; gap: 12px; }
   .status-swatch { width: 10px; height: 10px; border-radius: 3px; flex: 0 0 auto; }
@@ -47,23 +37,14 @@
   .status-track { flex: 1 1 240px; height: 14px; background: var(--gridline); border-radius: 4px; position: relative; }
   .status-fill { position: absolute; left: 0; top: 0; height: 100%; border-radius: 4px; min-width: 3px; }
   .status-nums { flex: 0 0 auto; width: 190px; text-align: right; font-size: var(--text-sm); font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+  .status-item-clickable {
+    cursor: pointer; border-radius: var(--radius-sm); margin: 0 -8px; padding: 6px 8px;
+    border: 1px solid transparent; transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+  .status-item-clickable:hover { background: var(--page); }
+  .status-item-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .status-item-clickable.active { background: var(--page); border-color: var(--border); }
 
-  /* ---------- segmented-control tabs ---------- */
-  .tabs {
-    display: inline-flex; gap: 2px; flex-wrap: wrap; margin-bottom: 12px;
-    background: var(--surface-2); border: 1px solid var(--border);
-    border-radius: var(--radius-pill); padding: 3px;
-  }
-  .tab-btn {
-    border: 1px solid transparent; background: transparent; color: var(--text-secondary);
-    border-radius: var(--radius-pill); padding: 6px 14px; font-size: var(--text-sm); cursor: pointer; font-family: inherit;
-    transition: background var(--transition-fast), color var(--transition-fast), box-shadow var(--transition-fast), border-color var(--transition-fast);
-  }
-  .tab-btn:hover:not(.active) { color: var(--text-primary); }
-  .tab-btn.active {
-    background: var(--surface-1); color: var(--text-primary); font-weight: 600;
-    border-color: var(--border); box-shadow: var(--shadow-sm);
-  }
   .tab-panel { display: none; }
   .tab-panel.active { display: block; }
 
@@ -74,7 +55,7 @@
   }
   .row-count { font-size: var(--text-sm); color: var(--text-muted); white-space: nowrap; }
 
-  .aging-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .aging-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
 </style>
 {% endblock %}
 
@@ -87,60 +68,14 @@
     <a class="btn" href="{{ url_for('reports') }}">Manage reports →</a>
   </div>
 
+  <div class="move-strip" id="move-strip"></div>
+
   <div class="kpi-row" id="kpi-row"></div>
 
-  <div class="card">
-    <h2>Stock health</h2>
-    <div class="card-sub">Every SKU, bucketed by how it's moving against its stock on hand.</div>
-    <div class="status-list" id="status-list"></div>
-  </div>
-
-  <div class="grid-3">
-    <div class="card">
-      <h2>Top brands by inventory value</h2>
-      <div class="card-sub">Where locked-up capital concentrates.</div>
-      <div id="chart-brands"></div>
-    </div>
-    <div class="card">
-      <h2>Top SKUs by inventory value</h2>
-      <div class="card-sub">Highest-value individual items on the shelf.</div>
-      <div id="chart-skus"></div>
-    </div>
-    <div class="card">
-      <h2>Top SKUs by sales</h2>
-      <div class="card-sub">Highest-volume movers in the trailing window.</div>
-      <div id="chart-skus-sales"></div>
-    </div>
-  </div>
-
-  <div class="card" id="trend-card">
-    <h2>Trends across imported months</h2>
-    <div class="card-sub" id="trend-sub"></div>
-    <div id="trend-empty" class="trend-empty" style="display:none">
-      Import another month's stock statement to start seeing trends here.
-    </div>
-    <div id="trend-body">
-      <div class="grid-2">
-        <div>
-          <div class="chart-title">Inventory value at period end</div>
-          <div id="chart-trend-value"></div>
-        </div>
-        <div>
-          <div class="chart-title">Units sold per period</div>
-          <div id="chart-trend-units"></div>
-        </div>
-      </div>
-      <div style="margin-top:18px">
-        <div class="chart-title">Units sold per period — top 5 brands</div>
-        <div id="chart-trend-brands"></div>
-      </div>
-    </div>
-  </div>
-
-  <div class="card">
+  <div class="card" id="action-hero">
     <h2>Action lists</h2>
     <div class="card-sub">Search across brand or SKU name; click a column to sort.</div>
-    <div class="tabs" id="tabs"></div>
+    <div class="status-list" id="status-tabs"></div>
     <div id="tab-panels"></div>
   </div>
 {% endblock %}
@@ -151,9 +86,9 @@
 <script id="data" type="application/json">{{ payload | tojson }}</script>
 <script>
 const DATA = JSON.parse(document.getElementById('data').textContent);
-// fmtINR, fmtNum, renderLineChart, statusBadgeHtml, openSkuDetail, openBrandDetail
-// are all defined once in base.html — shared with the global search box and
-// usable from any page, not just this one.
+// fmtINR, fmtNum, renderLineChart, statusBadgeHtml, openSkuDetail, openBrandDetail,
+// initCollapsibles are all defined once in base.html — shared with the global
+// search box and usable from any page, not just this one.
 const css = getComputedStyle(document.documentElement);
 
 // ---------- header ----------
@@ -164,6 +99,23 @@ document.getElementById('hdr-sub').textContent =
   `sales pace based on the trailing ${DATA.meta.trailing_days} days`;
 document.getElementById('footer-note').textContent =
   `${DATA.kpis.total_skus.toLocaleString('en-IN')} SKUs across ${DATA.kpis.total_brands.toLocaleString('en-IN')} brands`;
+
+// ---------- "your move" strip ----------
+(function () {
+  const oos = DATA.status_breakdown.find(s => s.status === 'out_of_stock')?.count || 0;
+  const low = DATA.status_breakdown.find(s => s.status === 'low_stock')?.count || 0;
+  const el = document.getElementById('move-strip');
+  if (oos === 0 && low === 0) {
+    el.innerHTML = `<span class="status-swatch" style="background:${css.getPropertyValue('--status-good').trim()}"></span>` +
+      `Nothing urgent — no SKUs out of stock or running low.`;
+  } else {
+    const parts = [];
+    if (oos > 0) parts.push(`${fmtNum(oos)} out of stock`);
+    if (low > 0) parts.push(`${fmtNum(low)} low stock`);
+    el.innerHTML = `<span class="status-swatch" style="background:${css.getPropertyValue('--status-critical').trim()}"></span>` +
+      `${parts.join(', ')} — <a href="#action-hero">review below ↓</a>`;
+  }
+})();
 
 // ---------- KPI tiles ----------
 const kpis = [
@@ -176,13 +128,38 @@ document.getElementById('kpi-row').innerHTML = kpis.map(k =>
   `<div class="stat-tile stat-tile-lg"><div class="label">${k.label}</div><div class="value">${k.value}</div></div>`
 ).join('');
 
-// ---------- status breakdown ----------
-const maxCount = Math.max(...DATA.status_breakdown.map(s => s.count), 1);
-document.getElementById('status-list').innerHTML = DATA.status_breakdown.map(s => {
+// ---------- merged status + action tabs ----------
+// The status row IS the tab switcher — one control instead of the old
+// separate "Stock health" card + tab strip showing the same 4 counts twice.
+// Source of truth for counts/labels/colors is DATA.status_breakdown
+// (analysis.py guarantees it and DATA.tables come from the same underlying
+// status column, so they can't disagree); TAB_DEFS only adds what
+// status_breakdown doesn't carry — sort order and empty-state copy.
+const TAB_DEFS = [
+  { key: 'out_of_stock', sort: ['value', 'desc'], emptyGood: "Nothing is out of stock — every SKU has something on the shelf." },
+  { key: 'low_stock', sort: ['days_of_cover', 'asc'], emptyGood: `Nothing is running low — no SKU is under ${DATA.meta.thresholds.low_stock_days} days of cover.` },
+  { key: 'dead_stock', sort: ['value', 'desc'], emptyGood: "No dead stock — everything on the shelf has sold recently." },
+  { key: 'overstock', sort: ['value', 'desc'], emptyGood: `Nothing is overstocked — no SKU has more than ${DATA.meta.thresholds.overstock_days} days of cover.` },
+];
+function statusMeta(key) {
+  return DATA.status_breakdown.find(s => s.status === key);
+}
+// Dead stock gets an extra "Days dead" column the other three tabs don't need.
+function colsFor(key) {
+  return key === 'dead_stock' ? DATA.dead_stock_table_columns : DATA.table_columns;
+}
+
+const statusTabsEl = document.getElementById('status-tabs');
+const panelsEl = document.getElementById('tab-panels');
+
+const maxCount = Math.max(...TAB_DEFS.map(t => statusMeta(t.key).count), 1);
+statusTabsEl.innerHTML = TAB_DEFS.map((t, i) => {
+  const s = statusMeta(t.key);
   const color = css.getPropertyValue(s.color_var).trim() || '#2a78d6';
   const pct = (100 * s.count / maxCount).toFixed(1);
   return `
-    <div class="status-item">
+    <div class="status-item status-item-clickable${i === 0 ? ' active' : ''}" data-tab="${t.key}"
+         tabindex="0" role="button" aria-pressed="${i === 0}">
       <span class="status-swatch" style="background:${color}"></span>
       <span class="status-name">${s.label}</span>
       <span class="status-track"><span class="status-fill" style="width:${pct}%;background:${color}"></span></span>
@@ -191,99 +168,13 @@ document.getElementById('status-list').innerHTML = DATA.status_breakdown.map(s =
     </div>`;
 }).join('');
 
-// ---------- horizontal bar chart (single hue) ----------
-function renderBarChart(containerId, rows, valueFmt, onClick) {
-  const max = Math.max(...rows.map(r => r.value), 1);
-  const color = css.getPropertyValue('--series-1').trim();
-  const html = rows.map((r, i) => {
-    const pct = Math.max(2, (100 * r.value / max));
-    const label = escapeHtml(r.label);
-    return `
-      <div class="bar-row${onClick ? ' bar-row-clickable' : ''}" ${onClick ? `data-idx="${i}" tabindex="0" role="button"` : ''}>
-        <span class="bar-label">${label}</span>
-        <span class="bar-track"><span class="bar-fill" style="width:${pct}%;background:${color}"></span></span>
-        <span class="bar-value">${valueFmt(r.value)}</span>
-        <span class="bar-tooltip">${label}: ${valueFmt(r.value)}</span>
-      </div>`;
-  }).join('');
-  const el = document.getElementById(containerId);
-  el.innerHTML = html;
-  if (onClick) {
-    el.querySelectorAll('.bar-row-clickable').forEach(row => {
-      const handler = () => onClick(rows[Number(row.dataset.idx)]);
-      row.addEventListener('click', handler);
-      row.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handler(); } });
-    });
-  }
-}
-renderBarChart('chart-brands', DATA.top_brands_by_value, fmtINR, r => openBrandDetail(r.brand));
-renderBarChart('chart-skus', DATA.top_skus_by_value, fmtINR, r => openSkuDetail(r.brand, r.sku));
-renderBarChart('chart-skus-sales', DATA.top_skus_by_sales, fmtNum, r => openSkuDetail(r.brand, r.sku));
-
-// ---------- trend section ----------
-(function () {
-  const t = DATA.trend;
-  const hasTrend = t.labels.length >= 2;
-  document.getElementById('trend-sub').textContent = hasTrend
-    ? `One point per imported report, ${t.labels[0]} through ${t.labels[t.labels.length - 1]}.`
-    : 'Only one report imported so far.';
-  document.getElementById('trend-empty').style.display = hasTrend ? 'none' : '';
-  document.getElementById('trend-body').style.display = hasTrend ? '' : 'none';
-  if (!hasTrend) return;
-
-  const seriesColor = css.getPropertyValue('--series-1').trim();
-  renderLineChart('chart-trend-value', {
-    labels: t.labels,
-    series: [{ name: 'Inventory value', color: seriesColor, values: t.inventory_value }],
-    yFormat: fmtINR,
-    showLegend: false,
-  });
-  renderLineChart('chart-trend-units', {
-    labels: t.labels,
-    series: [{ name: 'Units sold', color: seriesColor, values: t.units_sold }],
-    yFormat: fmtNum,
-    showLegend: false,
-  });
-
-  const brandColorVars = ['--series-1', '--series-2', '--series-3', '--series-4', '--series-5'];
-  const brandSeries = t.top_brands.map((brand, i) => ({
-    name: brand,
-    color: css.getPropertyValue(brandColorVars[i % brandColorVars.length]).trim(),
-    values: t.brand_units_sold[brand],
-  }));
-  if (brandSeries.length) {
-    renderLineChart('chart-trend-brands', {
-      labels: t.labels,
-      series: brandSeries,
-      yFormat: fmtNum,
-      showLegend: true,
-      onLegendClick: s => openBrandDetail(s.name),
-    });
-  }
-})();
-
-// ---------- action tables ----------
-const TAB_DEFS = [
-  { key: 'out_of_stock', label: 'Out of stock', sort: ['value', 'desc'], emptyGood: "Nothing is out of stock — every SKU has something on the shelf." },
-  { key: 'low_stock', label: 'Low stock', sort: ['days_of_cover', 'asc'], emptyGood: `Nothing is running low — no SKU is under ${DATA.meta.thresholds.low_stock_days} days of cover.` },
-  { key: 'dead_stock', label: 'Dead stock', sort: ['value', 'desc'], emptyGood: "No dead stock — everything on the shelf has sold recently." },
-  { key: 'overstock', label: 'Overstock', sort: ['value', 'desc'], emptyGood: `Nothing is overstocked — no SKU has more than ${DATA.meta.thresholds.overstock_days} days of cover.` },
-];
-// Dead stock gets an extra "Days dead" column the other three tabs don't need.
-function colsFor(key) {
-  return key === 'dead_stock' ? DATA.dead_stock_table_columns : DATA.table_columns;
-}
-
-const tabsEl = document.getElementById('tabs');
-const panelsEl = document.getElementById('tab-panels');
-
-tabsEl.innerHTML = TAB_DEFS.map((t, i) =>
-  `<button class="tab-btn${i === 0 ? ' active' : ''}" data-tab="${t.key}">${t.label} (${DATA.tables[t.key].length})</button>`
-).join('');
-
 panelsEl.innerHTML = TAB_DEFS.map((t, i) => `
   <div class="tab-panel${i === 0 ? ' active' : ''}" id="panel-${t.key}">
-    ${t.key === 'dead_stock' ? '<div class="aging-tiles" id="dead-stock-aging"></div>' : ''}
+    ${t.key === 'dead_stock' ? `
+    <details class="card-collapsible" id="card-dead-stock-aging">
+      <summary><span style="font-weight:600;font-size:var(--text-base)">Aging breakdown</span><span class="disclosure-icon" aria-hidden="true">▸</span></summary>
+      <div class="card-collapsible-body"><div class="aging-tiles" id="dead-stock-aging"></div></div>
+    </details>` : ''}
     <div class="table-controls">
       <input class="search-input" type="search" placeholder="Search brand or SKU…" data-tab="${t.key}" />
       <span class="row-count" data-count="${t.key}"></span>
@@ -298,6 +189,24 @@ panelsEl.innerHTML = TAB_DEFS.map((t, i) => `
     </div>
   </div>
 `).join('');
+// The dead-stock aging <details> was just created dynamically — base.html's
+// own initCollapsibles() already ran once before this script block executed
+// and couldn't have seen it; call it again now (already-initialized elements
+// are skipped, so this is safe to call more than once).
+initCollapsibles();
+
+function selectTab(key) {
+  statusTabsEl.querySelectorAll('.status-item').forEach(el => {
+    const active = el.dataset.tab === key;
+    el.classList.toggle('active', active);
+    el.setAttribute('aria-pressed', String(active));
+  });
+  panelsEl.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `panel-${key}`));
+}
+statusTabsEl.querySelectorAll('.status-item').forEach(el => {
+  el.addEventListener('click', () => selectTab(el.dataset.tab));
+  el.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectTab(el.dataset.tab); } });
+});
 
 const ROW_LIMIT = 300;
 const state = {};
@@ -372,15 +281,6 @@ function renderTable(key) {
   });
 }
 
-tabsEl.querySelectorAll('.tab-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    tabsEl.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    panelsEl.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-    document.getElementById(`panel-${btn.dataset.tab}`).classList.add('active');
-  });
-});
-
 panelsEl.querySelectorAll('.search-input').forEach(input => {
   input.addEventListener('input', () => {
     state[input.dataset.tab].query = input.value;
@@ -413,8 +313,7 @@ function exportCsv(key, label) {
 
 panelsEl.querySelectorAll('.export-btn').forEach(btn => {
   btn.addEventListener('click', () => {
-    const def = TAB_DEFS.find(t => t.key === btn.dataset.tab);
-    exportCsv(btn.dataset.tab, def.label);
+    exportCsv(btn.dataset.tab, statusMeta(btn.dataset.tab).label);
   });
 });
 

@@ -145,6 +145,21 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
         payload = _sanitize(build_payload(summary, None, thresholds))
         return render_template("dashboard.html", active_page="dashboard", payload=payload)
 
+    @app.get("/trends")
+    def trends():
+        all_entries, summary = get_current_data()
+        if summary is None:
+            return redirect(url_for("reports"))
+        with db.connect(app.config["DB_PATH"]) as conn:
+            thresholds = db.get_settings(conn)
+        # Same payload shape as /dashboard — this page just reads a different
+        # subset of it (top_brands_by_value/top_skus_by_value/top_skus_by_sales/
+        # trend instead of status_breakdown/tables). One shared build keeps
+        # both pages reading off the same fingerprint-cached summary, so they
+        # can't ever disagree on the numbers.
+        payload = _sanitize(build_payload(summary, None, thresholds))
+        return render_template("trends.html", active_page="trends", payload=payload)
+
     @app.get("/api/search")
     def api_search():
         q = request.args.get("q", "")

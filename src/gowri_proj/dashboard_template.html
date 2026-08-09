@@ -18,6 +18,7 @@
   :root {
     color-scheme: light;
     --surface-1:      #fcfcfb;
+    --surface-2:      #f2f2ef;
     --page:           #f9f9f7;
     --text-primary:   #0b0b0b;
     --text-secondary: #52514e;
@@ -64,6 +65,7 @@
     :root:where(:not([data-theme="light"])) {
       color-scheme: dark;
       --surface-1:      #1a1a19;
+      --surface-2:      #232322;
       --page:           #0d0d0d;
       --text-primary:   #ffffff;
       --text-secondary: #c3c2b7;
@@ -93,6 +95,7 @@
   :root[data-theme="dark"] {
     color-scheme: dark;
     --surface-1:      #1a1a19;
+    --surface-2:      #232322;
     --page:           #0d0d0d;
     --text-primary:   #ffffff;
     --text-secondary: #c3c2b7;
@@ -222,6 +225,35 @@
   .status-track { flex: 1 1 240px; height: 14px; background: var(--gridline); border-radius: 4px; position: relative; }
   .status-fill { position: absolute; left: 0; top: 0; height: 100%; border-radius: 4px; min-width: 3px; }
   .status-nums { flex: 0 0 auto; width: 190px; text-align: right; font-size: var(--text-sm); font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+  .status-item-clickable {
+    cursor: pointer; border-radius: var(--radius-sm); margin: 0 -8px; padding: 6px 8px;
+    border: 1px solid transparent; transition: background var(--transition-fast), border-color var(--transition-fast);
+  }
+  .status-item-clickable:hover { background: var(--page); }
+  .status-item-clickable.active { background: var(--page); border-color: var(--border); }
+
+  /* ---------- your-move strip ---------- */
+  .move-strip {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    border-radius: var(--radius-lg); padding: 10px 16px; font-size: var(--text-md);
+  }
+  .move-strip .status-swatch { width: 8px; height: 8px; }
+  .move-strip a { color: var(--accent); font-weight: 600; text-decoration: none; }
+
+  /* ---------- collapsible card (bare — no persistence in this offline file, ---------- */
+  /* it's regenerated fresh each CLI run, so there's nothing to remember) */
+  .card-collapsible:not(.card) {
+    border: 1px solid var(--gridline); border-radius: var(--radius-md); margin-bottom: 12px;
+  }
+  .card-collapsible:not(.card) > summary {
+    list-style: none; cursor: pointer; padding: 10px 12px;
+    display: flex; justify-content: space-between; align-items: center; gap: 12px;
+  }
+  .card-collapsible > summary::-webkit-details-marker { display: none; }
+  .card-collapsible > summary .disclosure-icon { transition: transform var(--transition-fast); color: var(--text-muted); }
+  .card-collapsible[open] > summary .disclosure-icon { transform: rotate(90deg); }
+  .card-collapsible:not(.card) > .card-collapsible-body { padding: 0 12px 12px; }
 
   /* ---------- segmented-control tabs ---------- */
   .tabs {
@@ -276,6 +308,8 @@
     <button class="theme-toggle" id="theme-toggle" type="button">Toggle theme</button>
   </header>
 
+  <div class="move-strip" id="move-strip"></div>
+
   <div class="kpi-row" id="kpi-row"></div>
 
   <div class="card" id="quality-card" style="display:none; border-color: var(--status-warning)">
@@ -292,28 +326,18 @@
     </div>
   </div>
 
-  <div class="card">
-    <h2>Stock health</h2>
-    <div class="card-sub">Every SKU, bucketed by how it's moving against its stock on hand.</div>
-    <div class="status-list" id="status-list"></div>
+  <div class="card" id="action-hero">
+    <h2>Action lists</h2>
+    <div class="card-sub">Search across brand or SKU name; click a column to sort.</div>
+    <div class="status-list" id="status-tabs"></div>
+    <div id="tab-panels"></div>
   </div>
 
-  <div class="grid-3">
-    <div class="card">
-      <h2>Top brands by inventory value</h2>
-      <div class="card-sub">Where locked-up capital concentrates.</div>
-      <div id="chart-brands"></div>
-    </div>
-    <div class="card">
-      <h2>Top SKUs by inventory value</h2>
-      <div class="card-sub">Highest-value individual items on the shelf.</div>
-      <div id="chart-skus"></div>
-    </div>
-    <div class="card">
-      <h2>Top SKUs by sales</h2>
-      <div class="card-sub">Highest-volume movers in the trailing window.</div>
-      <div id="chart-skus-sales"></div>
-    </div>
+  <div class="card">
+    <h2>Leaderboard</h2>
+    <div class="card-sub" id="leaderboard-sub"></div>
+    <div class="tabs" id="leaderboard-switch"></div>
+    <div id="chart-leaderboard"></div>
   </div>
 
   <div class="card" id="trend-card">
@@ -338,13 +362,6 @@
         <div id="chart-trend-brands"></div>
       </div>
     </div>
-  </div>
-
-  <div class="card">
-    <h2>Action lists</h2>
-    <div class="card-sub">Search across brand or SKU name; click a column to sort.</div>
-    <div class="tabs" id="tabs"></div>
-    <div id="tab-panels"></div>
   </div>
 
   <footer id="footer-note"></footer>
@@ -404,6 +421,23 @@ document.getElementById('kpi-row').innerHTML = kpis.map(k =>
   `<div class="stat-tile stat-tile-lg"><div class="label">${k.label}</div><div class="value">${k.value}</div></div>`
 ).join('');
 
+// ---------- "your move" strip ----------
+(function () {
+  const oos = DATA.status_breakdown.find(s => s.status === 'out_of_stock')?.count || 0;
+  const low = DATA.status_breakdown.find(s => s.status === 'low_stock')?.count || 0;
+  const el = document.getElementById('move-strip');
+  if (oos === 0 && low === 0) {
+    el.innerHTML = `<span class="status-swatch" style="background:${css.getPropertyValue('--status-good').trim()}"></span>` +
+      `Nothing urgent — no SKUs out of stock or running low.`;
+  } else {
+    const parts = [];
+    if (oos > 0) parts.push(`${fmtNum(oos)} out of stock`);
+    if (low > 0) parts.push(`${fmtNum(low)} low stock`);
+    el.innerHTML = `<span class="status-swatch" style="background:${css.getPropertyValue('--status-critical').trim()}"></span>` +
+      `${parts.join(', ')} — <a href="#action-hero">review below ↓</a>`;
+  }
+})();
+
 // ---------- data quality ----------
 if (DATA.quality_issues && DATA.quality_issues.length) {
   document.getElementById('quality-card').style.display = '';
@@ -423,22 +457,6 @@ if (DATA.quality_issues && DATA.quality_issues.length) {
     </tr>`).join('');
 }
 
-// ---------- status breakdown ----------
-const totalSkus = DATA.kpis.total_skus;
-const maxCount = Math.max(...DATA.status_breakdown.map(s => s.count), 1);
-document.getElementById('status-list').innerHTML = DATA.status_breakdown.map(s => {
-  const color = css.getPropertyValue(s.color_var).trim() || '#2a78d6';
-  const pct = (100 * s.count / maxCount).toFixed(1);
-  return `
-    <div class="status-item">
-      <span class="status-swatch" style="background:${color}"></span>
-      <span class="status-name">${s.label}</span>
-      <span class="status-track"><span class="status-fill" style="width:${pct}%;background:${color}"></span></span>
-      <span class="status-nums">${fmtNum(s.count)} SKUs · ${fmtINR(s.value)}</span>
-      <span class="status-blurb">${s.blurb}</span>
-    </div>`;
-}).join('');
-
 // ---------- horizontal bar chart (single hue) ----------
 function renderBarChart(containerId, rows, valueFmt) {
   const max = Math.max(...rows.map(r => r.value), 1);
@@ -456,9 +474,25 @@ function renderBarChart(containerId, rows, valueFmt) {
   }).join('');
   document.getElementById(containerId).innerHTML = html;
 }
-renderBarChart('chart-brands', DATA.top_brands_by_value, fmtINR);
-renderBarChart('chart-skus', DATA.top_skus_by_value, fmtINR);
-renderBarChart('chart-skus-sales', DATA.top_skus_by_sales, fmtNum);
+
+// ---------- leaderboard switcher ----------
+const LEADERBOARDS = [
+  { key: 'value', label: 'SKUs by value', sub: 'Highest-value individual items on the shelf.', rows: DATA.top_skus_by_value, valueFmt: fmtINR },
+  { key: 'sales', label: 'SKUs by sales', sub: 'Highest-volume movers in the trailing window.', rows: DATA.top_skus_by_sales, valueFmt: fmtNum },
+  { key: 'brand', label: 'Brands by value', sub: 'Where locked-up capital concentrates.', rows: DATA.top_brands_by_value, valueFmt: fmtINR },
+];
+const leaderboardSwitchEl = document.getElementById('leaderboard-switch');
+leaderboardSwitchEl.innerHTML = LEADERBOARDS.map((l, i) =>
+  `<button class="tab-btn${i === 0 ? ' active' : ''}" data-key="${l.key}" type="button">${l.label}</button>`
+).join('');
+function selectLeaderboard(key) {
+  const l = LEADERBOARDS.find(x => x.key === key);
+  leaderboardSwitchEl.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.dataset.key === key));
+  document.getElementById('leaderboard-sub').textContent = l.sub;
+  renderBarChart('chart-leaderboard', l.rows, l.valueFmt);
+}
+leaderboardSwitchEl.querySelectorAll('.tab-btn').forEach(b => b.addEventListener('click', () => selectLeaderboard(b.dataset.key)));
+selectLeaderboard('value');
 
 // ---------- line chart (trend series) ----------
 // A small self-contained SVG line chart: gridlines, one line per series,
@@ -591,28 +625,49 @@ function renderLineChart(containerId, { labels, series, yFormat, showLegend }) {
   }
 })();
 
-// ---------- action tables ----------
+// ---------- merged status + action tabs ----------
+// The status row IS the tab switcher — see dashboard.html's comment for the
+// full reasoning. Source of truth for counts/labels/colors is
+// DATA.status_breakdown; TAB_DEFS only adds sort order + which extra column
+// dead_stock needs.
 const TAB_DEFS = [
-  { key: 'out_of_stock', label: 'Out of stock', sort: ['value', 'desc'] },
-  { key: 'low_stock', label: 'Low stock', sort: ['days_of_cover', 'asc'] },
-  { key: 'dead_stock', label: 'Dead stock', sort: ['value', 'desc'] },
-  { key: 'overstock', label: 'Overstock', sort: ['value', 'desc'] },
+  { key: 'out_of_stock', sort: ['value', 'desc'] },
+  { key: 'low_stock', sort: ['days_of_cover', 'asc'] },
+  { key: 'dead_stock', sort: ['value', 'desc'] },
+  { key: 'overstock', sort: ['value', 'desc'] },
 ];
-const COLS = DATA.table_columns; // [[key, label], ...]
 function colsFor(key) {
   return key === 'dead_stock' ? DATA.dead_stock_table_columns : DATA.table_columns;
 }
+function statusMeta(key) {
+  return DATA.status_breakdown.find(s => s.status === key);
+}
 
-const tabsEl = document.getElementById('tabs');
+const statusTabsEl = document.getElementById('status-tabs');
 const panelsEl = document.getElementById('tab-panels');
 
-tabsEl.innerHTML = TAB_DEFS.map((t, i) =>
-  `<button class="tab-btn${i === 0 ? ' active' : ''}" data-tab="${t.key}">${t.label} (${DATA.tables[t.key].length})</button>`
-).join('');
+const maxCount = Math.max(...TAB_DEFS.map(t => statusMeta(t.key).count), 1);
+statusTabsEl.innerHTML = TAB_DEFS.map((t, i) => {
+  const s = statusMeta(t.key);
+  const color = css.getPropertyValue(s.color_var).trim() || '#2a78d6';
+  const pct = (100 * s.count / maxCount).toFixed(1);
+  return `
+    <div class="status-item status-item-clickable${i === 0 ? ' active' : ''}" data-tab="${t.key}">
+      <span class="status-swatch" style="background:${color}"></span>
+      <span class="status-name">${s.label}</span>
+      <span class="status-track"><span class="status-fill" style="width:${pct}%;background:${color}"></span></span>
+      <span class="status-nums">${fmtNum(s.count)} SKUs · ${fmtINR(s.value)}</span>
+      <span class="status-blurb">${s.blurb}</span>
+    </div>`;
+}).join('');
 
 panelsEl.innerHTML = TAB_DEFS.map((t, i) => `
   <div class="tab-panel${i === 0 ? ' active' : ''}" id="panel-${t.key}">
-    ${t.key === 'dead_stock' ? '<div class="aging-tiles" id="dead-stock-aging"></div>' : ''}
+    ${t.key === 'dead_stock' ? `
+    <details class="card-collapsible">
+      <summary><span style="font-weight:600;font-size:var(--text-base)">Aging breakdown</span><span class="disclosure-icon" aria-hidden="true">▸</span></summary>
+      <div class="card-collapsible-body"><div class="aging-tiles" id="dead-stock-aging"></div></div>
+    </details>` : ''}
     <div class="table-controls">
       <input class="search-input" type="search" placeholder="Search brand or SKU…" data-tab="${t.key}" />
       <span class="row-count" data-count="${t.key}"></span>
@@ -626,6 +681,14 @@ panelsEl.innerHTML = TAB_DEFS.map((t, i) => `
     </div>
   </div>
 `).join('');
+
+function selectTab(key) {
+  statusTabsEl.querySelectorAll('.status-item').forEach(el => el.classList.toggle('active', el.dataset.tab === key));
+  panelsEl.querySelectorAll('.tab-panel').forEach(p => p.classList.toggle('active', p.id === `panel-${key}`));
+}
+statusTabsEl.querySelectorAll('.status-item').forEach(el => {
+  el.addEventListener('click', () => selectTab(el.dataset.tab));
+});
 
 if (DATA.dead_stock_aging) {
   const labels = { '90-179': '90–179 days', '180-364': '180–364 days', '365-729': '1–2 years', '730+': '2+ years' };
@@ -686,15 +749,6 @@ function renderTable(key) {
   });
 }
 
-tabsEl.querySelectorAll('.tab-btn').forEach(btn => {
-  btn.addEventListener('click', () => {
-    tabsEl.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    panelsEl.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-    document.getElementById(`panel-${btn.dataset.tab}`).classList.add('active');
-  });
-});
-
 panelsEl.querySelectorAll('.search-input').forEach(input => {
   input.addEventListener('input', () => {
     state[input.dataset.tab].query = input.value;
@@ -727,8 +781,7 @@ function exportCsv(key, label) {
 
 panelsEl.querySelectorAll('.export-btn').forEach(btn => {
   btn.addEventListener('click', () => {
-    const def = TAB_DEFS.find(t => t.key === btn.dataset.tab);
-    exportCsv(btn.dataset.tab, def.label);
+    exportCsv(btn.dataset.tab, statusMeta(btn.dataset.tab).label);
   });
 });
 
