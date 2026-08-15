@@ -29,10 +29,9 @@
   .move-strip a:hover { color: var(--accent-hover); }
 
   /* ---------- status list (also doubles as the action-tab switcher) ---------- */
-  /* margin-bottom here (not just the inter-row gap) — this list is doing
-     double duty as both a summary and the table's tab switcher, so it
-     needs a clearer break from the table controls below it than the 10px
-     rhythm between its own rows, or the two sections read as one blob. */
+  /* margin-bottom is larger than the inter-row gap — this list doubles as
+     both a summary and the tab switcher, so it needs a clear break from the
+     table controls below it, not just its own row rhythm. */
   .status-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px; }
   .status-item {
     display: flex; align-items: center; gap: 12px;
@@ -50,11 +49,9 @@
   .status-item-clickable:hover { background: var(--page); }
   .status-item-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   .status-item-clickable.active { background: var(--surface-2); border-color: var(--border); box-shadow: var(--shadow-sm); }
-  /* The "Healthy" row — informational only, no tab to switch to. Same box
-     model as the clickable rows above (padding/margin now live on the
-     shared .status-item rule) so all 5 rows keep a consistent height and
-     rhythm — it was the odd one out before, sitting flush with no padding
-     while its siblings did, which is what made the gap after it look off. */
+  /* The "Healthy" row — informational only, no tab to switch to. Shares
+     .status-item's box model with the clickable rows so all 5 rows stay a
+     consistent height. */
   .status-item-static { opacity: 0.65; }
 
   .tab-panel { display: none; }

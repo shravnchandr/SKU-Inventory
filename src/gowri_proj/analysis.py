@@ -379,12 +379,9 @@ def summarize_history(
     reports = (
         all_entries[["report_id", "period_start", "period_end", "period_days", "company", "location"]]
         .drop_duplicates("report_id")
-        # Tiebroken on period_start too, not just period_end — the schema
-        # only enforces uniqueness on the (period_start, period_end) pair,
-        # not on period_end alone, and all_entries is deliberately fetched
-        # unordered from SQL for performance (see db.load_all_entries), so
-        # without this, which report counts as "latest" when two share a
-        # period_end would be non-deterministic across runs.
+        # Tiebroken on period_start too — period_end alone isn't unique
+        # (only the pair is), so without this "latest" would be
+        # non-deterministic whenever two reports share an end date.
         .sort_values(["period_end", "period_start"])
         .reset_index(drop=True)
     )
@@ -393,14 +390,9 @@ def summarize_history(
 
     # --- trailing window: opening/purchased/sold, all from the same span ---
     # Grouped by sku alone, not (brand, sku) — see _compute_dead_stock's
-    # docstring for why: a brand-label rename mid-window would otherwise
-    # silently drop the activity recorded under the old label.
-    #
-    # Opening/Purchased share Sold's window rather than just the latest
-    # month (see the module docstring for why) — concretely, that's the
-    # difference between "opening 19, purchased 10, sold 137" looking
-    # broken vs. "opening 10, purchased 128, sold 137" balancing to the
-    # actual closing stock.
+    # docstring for why. Opening/Purchased share Sold's window rather than
+    # just the latest month (see the module docstring) so the three numbers
+    # actually balance to the current closing stock.
     trailing_reports = _select_trailing_reports(reports, trailing_days_target)
     trailing_days = int(trailing_reports["period_days"].sum())
     trailing_entries = all_entries[all_entries["report_id"].isin(trailing_reports["report_id"])]

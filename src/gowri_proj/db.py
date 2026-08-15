@@ -92,6 +92,12 @@ CREATE TABLE IF NOT EXISTS settings (
 -- it can flag a currently-stocked SKU name that no longer matches anything
 -- here at all. Whole-table replace on every import (see import_item_catalog)
 -- since there's only ever one "current" catalog, not one per period.
+--
+-- packing/mrp/by_rate/tax_pct/hsn are captured field-for-field from the POS
+-- export but currently write-only — no query reads them back out yet. Kept
+-- deliberately, not dropped: retained source data for a plausible
+-- near-future feature (e.g. margin/price/pack-size checks on the SKU detail
+-- page) rather than accidental cruft.
 CREATE TABLE IF NOT EXISTS item_catalog (
     code TEXT PRIMARY KEY,
     brand TEXT,
@@ -136,6 +142,43 @@ def _migrate(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE settings ADD COLUMN value_tier_a_pct INTEGER NOT NULL DEFAULT 70")
     if "value_tier_b_pct" not in existing:
         conn.execute("ALTER TABLE settings ADD COLUMN value_tier_b_pct INTEGER NOT NULL DEFAULT 90")
+
+    _dedupe_stock_entries(conn)
+    # A backstop, not the primary defense — parser.py now aggregates
+    # duplicate SKU rows within one report before they're ever inserted, so
+    # this should never actually reject anything going forward. But adding
+    # a plain CREATE UNIQUE INDEX straight into SCHEMA would run before this
+    # function on every connect() and fail outright on any database that
+    # already had duplicates from before that fix existed — hence the
+    # dedupe pass immediately above, and creating the index here instead.
+    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_report_sku ON stock_entries(report_id, sku)")
+
+
+_STOCK_ENTRY_NUMERIC_COLS = [
+    "opening_stock", "purchase", "purchase_free", "other_receipt",
+    "sales", "sales_free", "other_issue", "closing_stock", "value",
+]
+
+
+def _dedupe_stock_entries(conn: sqlite3.Connection) -> None:
+    """Collapse any pre-existing (report_id, sku) duplicates by summing
+    their numeric columns — the same rule parser.py now applies before
+    import, applied here once for any database that predates that fix, so
+    the UNIQUE index below can actually be created.
+    """
+    has_dupes = conn.execute(
+        "SELECT EXISTS(SELECT 1 FROM stock_entries GROUP BY report_id, sku HAVING COUNT(*) > 1)"
+    ).fetchone()[0]
+    if not has_dupes:
+        return
+    df = pd.read_sql("SELECT * FROM stock_entries", conn)
+    deduped = df.groupby(["report_id", "sku"], as_index=False).agg(
+        {"brand": "first", **{col: "sum" for col in _STOCK_ENTRY_NUMERIC_COLS}}
+    )
+    conn.execute("DELETE FROM stock_entries")
+    deduped[["report_id", "brand", "sku"] + _STOCK_ENTRY_NUMERIC_COLS].to_sql(
+        "stock_entries", conn, if_exists="append", index=False
+    )
 
 
 @contextmanager
@@ -438,20 +481,36 @@ def _replace_item_catalog_table(conn: sqlite3.Connection, df: pd.DataFrame) -> i
 
 def get_item_catalog_df(conn: sqlite3.Connection) -> pd.DataFrame:
     """The full current catalog, in the shape import_item_catalog/
-    restore_item_catalog expect — used to snapshot the catalog before an
+    rollback_item_catalog expect — used to snapshot the catalog before an
     upload, so a failure partway through can be rolled back to it.
     """
     return pd.read_sql(f"SELECT {', '.join(ITEM_CATALOG_COLUMNS)} FROM item_catalog", conn)
 
 
-def restore_item_catalog(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
-    """Put the catalog back exactly as `df` (typically a get_item_catalog_df
-    snapshot taken just before a failed upload) — a raw replace, deliberately
-    skipping import_item_catalog's rename-diff logging: this is undoing a
-    change that never actually completed, not a real POS-side rename, so it
-    shouldn't be recorded as one in item_name_changes.
+def get_item_name_changes_watermark(conn: sqlite3.Connection) -> int:
+    """The highest item_name_changes rowid that exists right now — snapshot
+    this immediately before an import_item_catalog call (alongside
+    get_item_catalog_df) so a rollback can identify exactly the alias rows
+    *that import* added, without touching any real rename history a prior,
+    successful import already committed.
     """
-    return _replace_item_catalog_table(conn, df)
+    row = conn.execute("SELECT COALESCE(MAX(rowid), 0) FROM item_name_changes").fetchone()
+    return row[0]
+
+
+def rollback_item_catalog(conn: sqlite3.Connection, catalog_snapshot: pd.DataFrame, item_name_changes_watermark: int) -> int:
+    """Undo an import_item_catalog call that committed to the DB but whose
+    file write afterward failed: restores the catalog table to its
+    pre-import snapshot, and deletes any item_name_changes rows that import
+    added (rowid > item_name_changes_watermark). Without the second part, a
+    rename recorded by the failed import would linger in item_name_changes
+    forever — the code/name transition never actually took effect (the
+    catalog itself was rolled back), so find_sku_churn pairing a future
+    vanished/new SKU off of it would be pairing off a rename that never
+    happened.
+    """
+    conn.execute("DELETE FROM item_name_changes WHERE rowid > ?", (item_name_changes_watermark,))
+    return _replace_item_catalog_table(conn, catalog_snapshot)
 
 
 def get_name_change_map(conn: sqlite3.Connection) -> dict[str, str]:

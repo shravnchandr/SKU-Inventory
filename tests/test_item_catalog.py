@@ -359,3 +359,26 @@ def test_import_item_catalog_replaces_the_whole_table(tmp_path):
         meta = db.get_item_catalog_meta(conn)
     assert count == 1
     assert meta["item_count"] == 1
+
+
+def test_rollback_item_catalog_undoes_the_catalog_and_only_the_new_renames(tmp_path):
+    # A real prior rename (C1) is already committed from an earlier,
+    # successful import — the rollback must leave that alone. Only the
+    # rename the about-to-be-rolled-back import itself added (C2) should be
+    # removed.
+    with db.connect(str(tmp_path / "test.db")) as conn:
+        db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "OLD NAME 1", "OLD NAME 1 LONG"), _catalog_row("C2", "STABLE", "STABLE LONG")]))
+        db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "NEW NAME 1", "NEW NAME 1 LONG"), _catalog_row("C2", "STABLE", "STABLE LONG")]))
+        snapshot = db.get_item_catalog_df(conn)
+        watermark = db.get_item_name_changes_watermark(conn)
+
+        # Simulate the failed-upload import: C2 gets renamed too, on top of
+        # the already-committed C1 rename above.
+        db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "NEW NAME 1", "NEW NAME 1 LONG"), _catalog_row("C2", "RENAMED LATE", "RENAMED LATE LONG")]))
+
+        db.rollback_item_catalog(conn, snapshot, watermark)
+        alias_map = db.get_name_change_map(conn)
+        meta = db.get_item_catalog_meta(conn)
+
+    assert alias_map == {"OLD NAME 1": "NEW NAME 1", "OLD NAME 1 LONG": "NEW NAME 1 LONG"}
+    assert meta["item_count"] == 2

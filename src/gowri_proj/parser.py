@@ -301,4 +301,21 @@ def parse_stock_statement(path: str) -> tuple[pd.DataFrame, ReportMeta]:
     df = pd.DataFrame(rows, columns=TIDY_COLUMNS)
     numeric_cols = TIDY_COLUMNS[2:]
     df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
+
+    # The same SKU listed twice within one report (a source-export quirk —
+    # e.g. a batch split that lost its batch info in this flat export) would
+    # otherwise silently double-count that SKU's stock/value: db.py enforces
+    # one stock_entries row per (report, sku), and analysis.py's "current
+    # snapshot" assumes the same. Collapse duplicates by summing every
+    # numeric column rather than rejecting the whole file over it — the
+    # totals this produces are the honest combined figures either way, and
+    # not importing a real month's data over a formatting quirk elsewhere in
+    # the file would be worse. Keep the first brand seen; a genuine SKU
+    # identity collision under two different brands within the same report
+    # would be a real problem, but distinct from what this is fixing.
+    if df["sku"].duplicated().any():
+        df = df.groupby("sku", as_index=False, sort=False).agg(
+            {"brand": "first", **{col: "sum" for col in numeric_cols}}
+        )[TIDY_COLUMNS]
+
     return df, meta

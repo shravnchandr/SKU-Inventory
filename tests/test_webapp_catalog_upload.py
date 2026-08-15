@@ -133,12 +133,16 @@ def test_a_failed_file_replace_rolls_back_the_already_committed_db_import(client
     catalog_path = tmp_path / "uploads" / "item_catalog.xlsx"
     good_bytes = catalog_path.read_bytes()
 
+    # Reuses code C001 with a different name — a real rename, which
+    # import_item_catalog records to item_name_changes *before* the file
+    # write is even attempted. The rollback below needs to undo that too,
+    # not just the catalog table itself.
     new_path = tmp_path / "new.xlsx"
     _write_item_list(
         new_path,
         [
-            ("brand", "GSK"),
-            ("item", "G001", "AUGMENTIN 625 TAB", "10S", 200.0, 180.0, 12.0, "3004", "AUGMENTIN 625 DUO TAB"),
+            ("brand", "CIPLA"),
+            ("item", "C001", "ARKAMIN 0.1MG TAB RENAMED", "10S", 20.0, 15.0, 12.0, "3004", "ARKAMIN 0.1MG TABLET RENAMED"),
         ],
     )
     # The DB import (which happens first) succeeds normally; only the
@@ -156,6 +160,11 @@ def test_a_failed_file_replace_rolls_back_the_already_committed_db_import(client
     with db.connect(str(tmp_path / "test.db")) as conn:
         meta = db.get_item_catalog_meta(conn)
         names = db.list_item_catalog_names(conn)
+        alias_map = db.get_name_change_map(conn)
     assert meta["item_count"] == 1
+    # And the rename the failed import recorded must be gone too — it never
+    # actually took effect, so find_sku_churn must not be able to pair a
+    # future vanished/new SKU off of it.
+    assert alias_map == {}
+    assert "ARKAMIN 0.1MG TAB RENAMED" not in names
     assert "ARKAMIN 0.1MG TAB" in names
-    assert "AUGMENTIN 625 TAB" not in names
