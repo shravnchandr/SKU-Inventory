@@ -179,6 +179,8 @@ def _build_dashboard(args: argparse.Namespace) -> None:
         dead_stock_days=thresholds["dead_stock_days"],
         low_stock_days=thresholds["low_stock_days"],
         overstock_days=thresholds["overstock_days"],
+        value_tier_a_pct=thresholds["value_tier_a_pct"],
+        value_tier_b_pct=thresholds["value_tier_b_pct"],
     )
     meta = summary.meta
 

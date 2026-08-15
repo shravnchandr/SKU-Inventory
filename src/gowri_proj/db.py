@@ -75,6 +75,8 @@ CREATE TABLE IF NOT EXISTS settings (
     overstock_days INTEGER NOT NULL,
     trailing_days_target INTEGER NOT NULL,
     dead_stock_days INTEGER NOT NULL,
+    value_tier_a_pct INTEGER NOT NULL DEFAULT 70,
+    value_tier_b_pct INTEGER NOT NULL DEFAULT 90,
     -- Monotonic counter, not just a timestamp: datetime('now') is only
     -- second-resolution, so two saves within the same second wouldn't
     -- otherwise be distinguishable — which matters because this feeds the
@@ -123,6 +125,19 @@ CREATE INDEX IF NOT EXISTS idx_item_name_changes_old ON item_name_changes(old_na
 """
 
 
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Add columns to tables that already existed before they gained new
+    columns — "CREATE TABLE IF NOT EXISTS" is a no-op against a database
+    that already has the table, so a new NOT NULL column with a DEFAULT
+    needs an explicit ALTER TABLE for anyone upgrading from an older schema.
+    """
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(settings)")}
+    if "value_tier_a_pct" not in existing:
+        conn.execute("ALTER TABLE settings ADD COLUMN value_tier_a_pct INTEGER NOT NULL DEFAULT 70")
+    if "value_tier_b_pct" not in existing:
+        conn.execute("ALTER TABLE settings ADD COLUMN value_tier_b_pct INTEGER NOT NULL DEFAULT 90")
+
+
 @contextmanager
 def connect(db_path: str = DEFAULT_DB_PATH):
     path = Path(db_path)
@@ -130,6 +145,7 @@ def connect(db_path: str = DEFAULT_DB_PATH):
     conn = sqlite3.connect(path)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
+    _migrate(conn)
     try:
         yield conn
         conn.commit()
@@ -330,18 +346,24 @@ DEFAULT_SETTINGS = {
     "overstock_days": analysis.OVERSTOCK_DAYS,
     "trailing_days_target": analysis.TRAILING_DAYS_TARGET,
     "dead_stock_days": analysis.DEAD_STOCK_DAYS,
+    "value_tier_a_pct": analysis.VALUE_TIER_A_PCT,
+    "value_tier_b_pct": analysis.VALUE_TIER_B_PCT,
 }
 
 
 def get_settings(conn: sqlite3.Connection) -> dict:
     """Persisted status thresholds, or the built-in defaults if never saved."""
     row = conn.execute(
-        "SELECT low_stock_days, overstock_days, trailing_days_target, dead_stock_days, version, updated_at "
+        "SELECT low_stock_days, overstock_days, trailing_days_target, dead_stock_days, "
+        "value_tier_a_pct, value_tier_b_pct, version, updated_at "
         "FROM settings WHERE id = 1"
     ).fetchone()
     if row is None:
         return {**DEFAULT_SETTINGS, "version": 0, "updated_at": None}
-    keys = ["low_stock_days", "overstock_days", "trailing_days_target", "dead_stock_days", "version", "updated_at"]
+    keys = [
+        "low_stock_days", "overstock_days", "trailing_days_target", "dead_stock_days",
+        "value_tier_a_pct", "value_tier_b_pct", "version", "updated_at",
+    ]
     return dict(zip(keys, row))
 
 
@@ -351,15 +373,19 @@ def upsert_settings(
     overstock_days: int,
     trailing_days_target: int,
     dead_stock_days: int,
+    value_tier_a_pct: int,
+    value_tier_b_pct: int,
 ) -> dict:
     conn.execute(
-        "INSERT INTO settings (id, low_stock_days, overstock_days, trailing_days_target, dead_stock_days, version, updated_at) "
-        "VALUES (1, ?, ?, ?, ?, 1, datetime('now')) "
+        "INSERT INTO settings (id, low_stock_days, overstock_days, trailing_days_target, dead_stock_days, "
+        "value_tier_a_pct, value_tier_b_pct, version, updated_at) "
+        "VALUES (1, ?, ?, ?, ?, ?, ?, 1, datetime('now')) "
         "ON CONFLICT(id) DO UPDATE SET "
         "low_stock_days=excluded.low_stock_days, overstock_days=excluded.overstock_days, "
         "trailing_days_target=excluded.trailing_days_target, dead_stock_days=excluded.dead_stock_days, "
+        "value_tier_a_pct=excluded.value_tier_a_pct, value_tier_b_pct=excluded.value_tier_b_pct, "
         "version=settings.version + 1, updated_at=excluded.updated_at",
-        (low_stock_days, overstock_days, trailing_days_target, dead_stock_days),
+        (low_stock_days, overstock_days, trailing_days_target, dead_stock_days, value_tier_a_pct, value_tier_b_pct),
     )
     return get_settings(conn)
 

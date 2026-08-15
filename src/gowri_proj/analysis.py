@@ -61,6 +61,107 @@ THRESHOLD_DAYS_MAX = 3650
 # history pile up (empirically ~75% of total compute time at 10+ years).
 AGING_LOOKBACK_FLOOR_DAYS = 750
 
+# Value-tier cutoffs for ABC segmentation (see _compute_value_tiers): SKUs
+# sorted by value descending, tier A is the top VALUE_TIER_A_PCT% of
+# cumulative value, tier B the next slice up to VALUE_TIER_B_PCT%, tier C
+# the long tail beyond that.
+VALUE_TIER_A_PCT = 70
+VALUE_TIER_B_PCT = 90
+
+# Valid range for the two percent-based settings above.
+THRESHOLD_PCT_MIN = 1
+THRESHOLD_PCT_MAX = 99
+
+# Movement axis for ABC segmentation, derived from the existing status
+# rather than a new metric — dead_stock is already "hasn't moved," overstock
+# is already "moving, but slowly." out_of_stock/returned SKUs are left out
+# entirely (no stock on hand, so no movement to characterize).
+MOVEMENT_BY_STATUS = {
+    "dead_stock": "non_moving",
+    "overstock": "slow",
+    "low_stock": "fast",
+    "healthy": "fast",
+}
+
+# Fixed order (not derived from data) so segment tiles/JSON always render in
+# the same sequence — same reasoning as DEAD_STOCK_AGING_BUCKETS below.
+VALUE_TIERS = ("A", "B", "C")
+MOVEMENTS = ("fast", "slow", "non_moving")
+SEGMENT_ORDER = [(tier, movement) for tier in VALUE_TIERS for movement in MOVEMENTS]
+
+
+def _compute_value_tiers(current: pd.DataFrame, a_pct: float, b_pct: float) -> pd.Series:
+    """ABC value tier per SKU, keyed by sku: cumulative share of total value,
+    SKUs sorted highest-value first. A SKU lands in whichever tier its
+    *own* running cumulative percentage first reaches — the SKU that pushes
+    the cumulative total past a_pct still counts as the one where the
+    cutoff was crossed, the standard ABC convention.
+
+    Scoped to SKUs actually on the shelf (closing_stock > 0) — an
+    out-of-stock SKU has nothing to tie up capital in right now, so it has
+    no meaningful "value tier" to review.
+    """
+    stocked = current[current["closing_stock"] > 0][["sku", "value"]]
+    if stocked.empty or stocked["value"].sum() <= 0:
+        # Nothing to rank, or every SKU is worth exactly zero — no
+        # meaningful A/B split, so treat everything as the long tail.
+        return pd.Series("C", index=stocked["sku"], name="tier")
+
+    ordered = stocked.sort_values(["value", "sku"], ascending=[False, True])
+    # Cumulative % *before* this SKU (i.e. excluding its own value): a SKU
+    # is judged by whether the running total had already reached the cutoff
+    # by the time we got to it, not by whether adding it pushes over — that
+    # would (wrongly) drop the single highest-value SKU into tier C whenever
+    # it alone makes up more than a_pct of total value, since there'd be
+    # nothing smaller to "stay under" the cutoff with.
+    cumulative_before_pct = ordered["value"].cumsum().shift(fill_value=0) / ordered["value"].sum() * 100
+    tier = np.select(
+        [cumulative_before_pct < a_pct, cumulative_before_pct < b_pct],
+        ["A", "B"],
+        default="C",
+    )
+    return pd.Series(tier, index=ordered["sku"], name="tier")
+
+
+def _compute_value_segments(merged: pd.DataFrame, a_pct: float, b_pct: float) -> pd.DataFrame:
+    """Per-SKU ABC-tier x movement segment, for every currently-stocked,
+    moving-or-not-moving SKU (out_of_stock/returned excluded — see
+    MOVEMENT_BY_STATUS).
+    """
+    tiers = _compute_value_tiers(merged, a_pct, b_pct)
+    if tiers.empty:
+        return pd.DataFrame(columns=["brand", "sku", "value", "days_of_cover", "status", "tier", "movement", "segment"])
+    segments = merged[merged["sku"].isin(tiers.index)][
+        ["brand", "sku", "value", "days_of_cover", "status"]
+    ].copy()
+    segments["tier"] = segments["sku"].map(tiers)
+    segments["movement"] = segments["status"].map(MOVEMENT_BY_STATUS)
+    segments = segments.dropna(subset=["movement"])
+    if segments.empty:
+        # Every stocked SKU was out_of_stock/returned (excluded above) or had
+        # some other status MOVEMENT_BY_STATUS doesn't cover — nothing left
+        # to concatenate a "tier-movement" string out of.
+        return pd.DataFrame(columns=["brand", "sku", "value", "days_of_cover", "status", "tier", "movement", "segment"])
+    segments["segment"] = segments["tier"] + "-" + segments["movement"]
+    return segments.sort_values("value", ascending=False).reset_index(drop=True)
+
+
+def _value_segment_summary(segments: pd.DataFrame) -> list:
+    """Count/value per (tier, movement), in SEGMENT_ORDER — every segment
+    appears even with zero SKUs in it, same convention as
+    DEAD_STOCK_AGING_BUCKETS/_dead_stock_aging (a list, not a dict: Flask's
+    tojson filter would otherwise alphabetize/reorder dict keys).
+    """
+    grouped = segments.groupby(["tier", "movement"])["value"].agg(["count", "sum"])
+    result = []
+    for tier, movement in SEGMENT_ORDER:
+        if (tier, movement) in grouped.index:
+            count, value = grouped.loc[(tier, movement)]
+        else:
+            count, value = 0, 0.0
+        result.append({"tier": tier, "movement": movement, "count": int(count), "value": round(float(value), 2)})
+    return result
+
 
 def _period_label(period_start: date, period_end: date) -> str:
     if period_start.year == period_end.year and period_start.month == period_end.month:
@@ -255,6 +356,8 @@ class InventorySummary:
     dead_stock: pd.DataFrame
     overstock: pd.DataFrame
     dead_stock_aging: list
+    value_segments: list
+    value_segment_skus: pd.DataFrame
     trend: TrendSeries
     enriched: pd.DataFrame = field(repr=False)
 
@@ -265,6 +368,8 @@ def summarize_history(
     dead_stock_days: int = DEAD_STOCK_DAYS,
     low_stock_days: int = LOW_STOCK_DAYS,
     overstock_days: int = OVERSTOCK_DAYS,
+    value_tier_a_pct: float = VALUE_TIER_A_PCT,
+    value_tier_b_pct: float = VALUE_TIER_B_PCT,
 ) -> InventorySummary:
     """Build the full inventory summary from every imported report.
 
@@ -417,6 +522,9 @@ def summarize_history(
     dead_stock_df = subset("dead_stock", "value", extra_cols=["days_since_activity"])
     dead_stock_aging = _dead_stock_aging(dead_stock_df)
 
+    value_segment_skus = _compute_value_segments(merged, value_tier_a_pct, value_tier_b_pct)
+    value_segments = _value_segment_summary(value_segment_skus)
+
     # --- trend series, one point per imported report ---
     per_report = all_entries.groupby("report_id").agg(value=("value", "sum"), sales=("sales", "sum"))
     reports_ordered = reports.merge(per_report, on="report_id")
@@ -472,6 +580,8 @@ def summarize_history(
         dead_stock=dead_stock_df,
         overstock=subset("overstock", "value"),
         dead_stock_aging=dead_stock_aging,
+        value_segments=value_segments,
+        value_segment_skus=value_segment_skus,
         trend=trend,
         enriched=merged,
     )

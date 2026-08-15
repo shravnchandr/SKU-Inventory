@@ -58,6 +58,36 @@ def _status_blurbs(thresholds: dict) -> dict[str, str]:
     }
 
 
+SEGMENT_TIER_LABELS = {
+    "A": "A — top value",
+    "B": "B — mid value",
+    "C": "C — long tail",
+}
+SEGMENT_MOVEMENT_LABELS = {
+    "fast": "Fast",
+    "slow": "Slow",
+    "non_moving": "Non-moving",
+}
+# One blurb per (tier, movement) combination — the actual "review/reorder
+# policy" guidance the user asked for. No automation (this app has no
+# ordering system): just a short recommendation shown next to each segment.
+SEGMENT_POLICY = {
+    ("A", "fast"): "Top priority — keep well stocked, review often.",
+    ("A", "slow"): "High value moving slowly — review before reordering; consider a smaller order quantity.",
+    ("A", "non_moving"): "High value tied up, not moving — review for return/markdown before it ages further.",
+    ("B", "fast"): "Standard reorder cadence, no special attention needed.",
+    ("B", "slow"): "Reduce reorder quantity; keep an eye on it.",
+    ("B", "non_moving"): "Worth a look — candidate for markdown or return.",
+    ("C", "fast"): "Low value, low risk — simplified reordering.",
+    ("C", "slow"): "Low-value long tail — reorder only on request, minimal review.",
+    ("C", "non_moving"): "Low-value dead stock — low priority, but a candidate to drop from the catalog.",
+}
+
+
+def _segment_policy(tier: str, movement: str) -> str:
+    return SEGMENT_POLICY[(tier, movement)]
+
+
 def _table_columns(trailing_days: int) -> list[tuple[str, str]]:
     """Action-list table columns.
 
@@ -96,6 +126,8 @@ DEFAULT_THRESHOLDS = {
     "overstock_days": 90,
     "trailing_days_target": 90,
     "dead_stock_days": 90,
+    "value_tier_a_pct": 70,
+    "value_tier_b_pct": 90,
 }
 
 
@@ -150,6 +182,17 @@ def build_payload(
         table_columns = _table_columns(meta.trailing_days)
         dead_stock_table_columns = table_columns + [("days_since_activity", "Days dead")]
 
+    value_segments = [
+        {
+            **s,
+            "tier_label": SEGMENT_TIER_LABELS[s["tier"]],
+            "movement_label": SEGMENT_MOVEMENT_LABELS[s["movement"]],
+            "policy": _segment_policy(s["tier"], s["movement"]),
+        }
+        for s in summary.value_segments
+    ]
+    value_segment_skus = _round_records(summary.value_segment_skus) if include_tables else []
+
     trend = summary.trend
 
     return {
@@ -195,6 +238,8 @@ def build_payload(
         "table_columns": table_columns,
         "dead_stock_table_columns": dead_stock_table_columns,
         "dead_stock_aging": summary.dead_stock_aging if include_tables else [],
+        "value_segments": value_segments,
+        "value_segment_skus": value_segment_skus,
         "trend": {
             "labels": trend.labels,
             "period_ends": trend.period_ends,

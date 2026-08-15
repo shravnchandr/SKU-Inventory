@@ -213,6 +213,13 @@
 
   .aging-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; margin-bottom: 16px; }
 
+  .segment-tier-group { margin-bottom: 14px; }
+  .segment-tier-label { font-weight: 600; font-size: var(--text-sm); color: var(--text-muted); margin-bottom: 6px; }
+  .stat-tile-clickable { cursor: pointer; transition: background var(--transition-fast), outline-color var(--transition-fast); outline: 2px solid transparent; outline-offset: -2px; }
+  .stat-tile-clickable:hover { background: var(--page); }
+  .stat-tile-clickable.active { outline-color: var(--accent); background: var(--surface-2); }
+  .segment-policy { font-size: var(--text-sm); color: var(--text-secondary); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin: 14px 0; }
+
   .status-list { display: flex; flex-direction: column; gap: 10px; margin-bottom: 18px; }
   .status-item {
     display: flex; align-items: center; gap: 12px;
@@ -330,6 +337,13 @@
     <div class="card-sub">Search across brand or SKU name; click a column to sort.</div>
     <div class="status-list" id="status-tabs"></div>
     <div id="tab-panels"></div>
+  </div>
+
+  <div class="card" id="card-value-segments">
+    <h2>Value segments (ABC × movement)</h2>
+    <div class="card-sub" id="value-segments-sub"></div>
+    <div id="value-segment-groups"></div>
+    <div id="value-segment-detail"></div>
   </div>
 
   <div class="card">
@@ -743,6 +757,55 @@ if (DATA.dead_stock_aging) {
       <div class="value">${fmtNum(d.count)} SKUs</div>
       <div class="sub">${fmtINR(d.value)}</div>
     </div>`).join('');
+}
+
+// ---------- value segments (ABC x movement) ----------
+if (DATA.value_segments && DATA.value_segments.length) {
+  const segments = DATA.value_segments;
+  const skus = DATA.value_segment_skus || [];
+  const th = DATA.meta.thresholds;
+  document.getElementById('value-segments-sub').textContent =
+    `Tier A = the top ${th.value_tier_a_pct}% of value on the shelf, B the next slice up to ${th.value_tier_b_pct}%, ` +
+    `C the long tail beyond that — crossed with whether each SKU is actually moving. Click a tile for guidance and its SKU list.`;
+
+  const groupsEl = document.getElementById('value-segment-groups');
+  const tiers = ['A', 'B', 'C'];
+  groupsEl.innerHTML = tiers.map(tier => {
+    const tileHtml = segments.filter(s => s.tier === tier).map(s => `
+      <div class="stat-tile stat-tile-clickable" data-tier="${s.tier}" data-movement="${s.movement}">
+        <div class="label">${s.movement_label}</div>
+        <div class="value">${fmtNum(s.count)} SKUs</div>
+        <div class="sub">${fmtINR(s.value)}</div>
+      </div>`).join('');
+    const tierLabel = segments.find(s => s.tier === tier).tier_label;
+    return `<div class="segment-tier-group"><div class="segment-tier-label">${tierLabel}</div><div class="aging-tiles">${tileHtml}</div></div>`;
+  }).join('');
+
+  const detailEl = document.getElementById('value-segment-detail');
+  function selectSegment(tier, movement) {
+    groupsEl.querySelectorAll('.stat-tile-clickable').forEach(el => {
+      el.classList.toggle('active', el.dataset.tier === tier && el.dataset.movement === movement);
+    });
+    const meta = segments.find(s => s.tier === tier && s.movement === movement);
+    const rows = skus.filter(r => r.tier === tier && r.movement === movement).sort((a, b) => b.value - a.value);
+    const rowsHtml = rows.length
+      ? rows.map(r => `<tr><td>${escapeHtml(r.brand || '')}</td><td>${escapeHtml(r.sku || '')}</td><td>${fmtINR(r.value)}</td>` +
+          `<td>${r.days_of_cover === null || r.days_of_cover === undefined ? '∞' : Number(r.days_of_cover).toLocaleString('en-IN')}</td></tr>`).join('')
+      : `<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:20px">No SKUs in this segment right now.</td></tr>`;
+    detailEl.innerHTML = `
+      <div class="segment-policy"><strong>${meta.tier_label} · ${meta.movement_label}:</strong> ${escapeHtml(meta.policy)}</div>
+      <div class="table-scroll">
+        <table class="data-table">
+          <thead><tr><th>Brand</th><th>SKU</th><th>Value (₹)</th><th>Days cover</th></tr></thead>
+          <tbody>${rowsHtml}</tbody>
+        </table>
+      </div>`;
+  }
+  groupsEl.querySelectorAll('.stat-tile-clickable').forEach(el => {
+    el.addEventListener('click', () => selectSegment(el.dataset.tier, el.dataset.movement));
+  });
+  const firstNonEmpty = segments.find(s => s.tier === 'A' && s.movement !== 'fast' && s.count > 0) || segments[0];
+  selectSegment(firstNonEmpty.tier, firstNonEmpty.movement);
 }
 
 const state = {};

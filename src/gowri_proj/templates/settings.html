@@ -59,6 +59,22 @@
           smooths out one unusually strong or weak month; a narrower one reacts faster to recent changes.
         </div>
       </div>
+      <div class="field">
+        <label for="value_tier_a_pct">Value tier A — cumulative % of value</label>
+        <input type="number" id="value_tier_a_pct" name="value_tier_a_pct" min="1" max="99" value="{{ settings.value_tier_a_pct }}" required />
+        <div class="help">
+          SKUs sorted by value, highest first — tier <b>A</b> is however many it takes to reach this
+          percentage of total value on the shelf.
+        </div>
+      </div>
+      <div class="field">
+        <label for="value_tier_b_pct">Value tier B — cumulative % of value</label>
+        <input type="number" id="value_tier_b_pct" name="value_tier_b_pct" min="1" max="99" value="{{ settings.value_tier_b_pct }}" required />
+        <div class="help">
+          Tier <b>B</b> continues from tier A up to this percentage; whatever's left is tier <b>C</b>,
+          the long tail. Must be greater than the tier A percentage above.
+        </div>
+      </div>
       <div class="settings-actions">
         <button class="btn btn-primary" type="submit" id="save-btn">Save</button>
         <span class="settings-updated" id="settings-updated">
@@ -75,9 +91,10 @@ document.getElementById('settings-form').addEventListener('submit', async (ev) =
   ev.preventDefault();
   const form = ev.currentTarget;
   const btn = document.getElementById('save-btn');
-  const fields = ['low_stock_days', 'overstock_days', 'trailing_days_target', 'dead_stock_days'];
+  const dayFields = ['low_stock_days', 'overstock_days', 'trailing_days_target', 'dead_stock_days'];
+  const pctFields = ['value_tier_a_pct', 'value_tier_b_pct'];
   const body = {};
-  for (const f of fields) {
+  for (const f of dayFields) {
     const input = form.elements[f];
     const value = Number(input.value);
     if (!Number.isInteger(value) || value < 1 || value > 3650) {
@@ -86,6 +103,21 @@ document.getElementById('settings-form').addEventListener('submit', async (ev) =
       return;
     }
     body[f] = value;
+  }
+  for (const f of pctFields) {
+    const input = form.elements[f];
+    const value = Number(input.value);
+    if (!Number.isInteger(value) || value < 1 || value > 99) {
+      toast(`${input.previousElementSibling ? input.previousElementSibling.textContent : f} must be a whole number between 1 and 99.`, 'error');
+      input.focus();
+      return;
+    }
+    body[f] = value;
+  }
+  if (body.value_tier_a_pct >= body.value_tier_b_pct) {
+    toast('Value tier A must be less than value tier B.', 'error');
+    form.elements.value_tier_a_pct.focus();
+    return;
   }
 
   btn.disabled = true;

@@ -18,6 +18,8 @@ from . import db
 from .analysis import (
     THRESHOLD_DAYS_MAX,
     THRESHOLD_DAYS_MIN,
+    THRESHOLD_PCT_MAX,
+    THRESHOLD_PCT_MIN,
     brand_history,
     find_import_gaps,
     find_sku_churn,
@@ -112,6 +114,8 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
                     dead_stock_days=settings["dead_stock_days"],
                     low_stock_days=settings["low_stock_days"],
                     overstock_days=settings["overstock_days"],
+                    value_tier_a_pct=settings["value_tier_a_pct"],
+                    value_tier_b_pct=settings["value_tier_b_pct"],
                 )
                 app.config["_SUMMARY_CACHE"] = (fingerprint, all_entries, summary, settings)
                 result = all_entries, summary, settings
@@ -308,19 +312,28 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
     @app.post("/api/settings")
     def api_save_settings():
         body = request.get_json(silent=True) or {}
-        fields = ["low_stock_days", "overstock_days", "trailing_days_target", "dead_stock_days"]
+        day_fields = ["low_stock_days", "overstock_days", "trailing_days_target", "dead_stock_days"]
+        pct_fields = ["value_tier_a_pct", "value_tier_b_pct"]
         values = {}
-        for field_name in fields:
+        for field_name in day_fields + pct_fields:
             raw = body.get(field_name)
             try:
                 value = int(raw)
             except (TypeError, ValueError):
                 return jsonify(error=f"'{field_name}' must be a whole number."), 400
-            if not (THRESHOLD_DAYS_MIN <= value <= THRESHOLD_DAYS_MAX):
-                return jsonify(
-                    error=f"'{field_name}' must be between {THRESHOLD_DAYS_MIN} and {THRESHOLD_DAYS_MAX} days."
-                ), 400
+            if field_name in day_fields:
+                if not (THRESHOLD_DAYS_MIN <= value <= THRESHOLD_DAYS_MAX):
+                    return jsonify(
+                        error=f"'{field_name}' must be between {THRESHOLD_DAYS_MIN} and {THRESHOLD_DAYS_MAX} days."
+                    ), 400
+            else:
+                if not (THRESHOLD_PCT_MIN <= value <= THRESHOLD_PCT_MAX):
+                    return jsonify(
+                        error=f"'{field_name}' must be between {THRESHOLD_PCT_MIN} and {THRESHOLD_PCT_MAX} percent."
+                    ), 400
             values[field_name] = value
+        if values["value_tier_a_pct"] >= values["value_tier_b_pct"]:
+            return jsonify(error="'value_tier_a_pct' must be less than 'value_tier_b_pct'."), 400
         with db.connect(app.config["DB_PATH"]) as conn:
             saved = db.upsert_settings(conn, **values)
         return jsonify(saved)
