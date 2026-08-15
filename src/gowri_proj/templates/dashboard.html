@@ -86,6 +86,8 @@
     <a class="btn" href="{{ url_for('reports') }}">Manage reports →</a>
   </div>
 
+  <div class="move-strip" id="gap-strip" style="display:none"></div>
+
   <div class="move-strip" id="move-strip"></div>
 
   <div class="kpi-row" id="kpi-row"></div>
@@ -124,6 +126,25 @@ document.getElementById('hdr-sub').textContent =
   `sales pace based on the trailing ${DATA.meta.trailing_days} days`;
 document.getElementById('footer-note').textContent =
   `${DATA.kpis.total_skus.toLocaleString('en-IN')} SKUs across ${DATA.kpis.total_brands.toLocaleString('en-IN')} brands`;
+
+// ---------- incomplete trailing-window warning ----------
+// Distinct from Reports/Import health's full-history gap check — this is
+// specifically about the reports the *current sales-pace figure* is
+// computed from. A gap inside that specific window means daily_demand is
+// dividing real sales by a day count that includes days nothing was
+// tracked, silently understating the rate — worth flagging right where the
+// number is shown, not just on a different page.
+(function () {
+  const gaps = DATA.meta.trailing_window_gaps || [];
+  if (!gaps.length) return;
+  const totalDays = gaps.reduce((sum, g) => sum + g.days, 0);
+  const el = document.getElementById('gap-strip');
+  el.style.display = '';
+  el.innerHTML = `<span class="status-swatch" style="background:${css.getPropertyValue('--status-warning').trim()}"></span>` +
+    `Sales pace is based on an incomplete history — ${fmtNum(totalDays)} day${totalDays === 1 ? '' : 's'} missing ` +
+    `within the trailing ${DATA.meta.trailing_days}-day window, so it likely understates the real rate. ` +
+    `<a href="{{ url_for('reports') }}">Check Import health →</a>`;
+})();
 
 // ---------- "your move" strip ----------
 (function () {

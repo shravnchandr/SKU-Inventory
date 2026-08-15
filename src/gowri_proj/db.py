@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import sqlite3
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
@@ -203,6 +203,7 @@ class ImportResult:
     period_end: date
     sku_count: int
     replaced: bool
+    superseded_report_ids: list[int] = field(default_factory=list)
 
 
 def period_exists(conn: sqlite3.Connection, meta: ReportMeta) -> int | None:
@@ -256,6 +257,40 @@ def delete_report(conn: sqlite3.Connection, report_id: int) -> bool:
     return cur.rowcount > 0
 
 
+def find_superseded_reports(
+    conn: sqlite3.Connection, meta: ReportMeta
+) -> tuple[list[int], list[tuple[int, str, str]]]:
+    """Reports whose date range overlaps the new one — a genuinely different
+    scenario from period_exists's exact match (handled separately via
+    replace), and excluded from this query's results so the two mechanisms
+    never double-handle the same report.
+
+    Split into two groups, because only one of them can be resolved
+    automatically:
+    - superseded: the new upload's range reaches at least as far as
+      theirs — e.g. a progressively re-exported "first week" superseded by
+      "first two weeks" superseded by the full month, which is how this
+      app expects reports to normally accumulate mid-period. Safe to delete
+      and replace with the new, more complete report.
+    - blocking: overlaps only partially, without the new upload reaching as
+      far as an existing report already does — there's no way to tell
+      automatically which side is "correct" for the disputed range, so this
+      can't be resolved without a human deciding.
+    """
+    rows = conn.execute(
+        "SELECT id, period_start, period_end FROM reports "
+        "WHERE period_start <= ? AND period_end >= ? AND NOT (period_start = ? AND period_end = ?)",
+        (
+            meta.period_end.isoformat(), meta.period_start.isoformat(),
+            meta.period_start.isoformat(), meta.period_end.isoformat(),
+        ),
+    ).fetchall()
+    new_end = meta.period_end.isoformat()
+    superseded = [r[0] for r in rows if new_end >= r[2]]
+    blocking = [tuple(r) for r in rows if new_end < r[2]]
+    return superseded, blocking
+
+
 def import_report(
     conn: sqlite3.Connection,
     df: pd.DataFrame,
@@ -284,6 +319,23 @@ def import_report(
         conn.execute("DELETE FROM reports WHERE id = ?", (existing_id,))
         replaced = True
 
+    superseded_ids, blocking = find_superseded_reports(conn, meta)
+    if blocking:
+        ranges = "; ".join(f"{p_start} to {p_end}" for _, p_start, p_end in blocking)
+        raise ValueError(
+            f"This period ({meta.period_start} to {meta.period_end}) partially overlaps an "
+            f"existing report without fully covering it ({ranges}) — automatically resolving "
+            "which side is correct for the overlapping dates isn't possible. Remove the "
+            "conflicting report on the Reports page first if this file is correct."
+        )
+    for report_id in superseded_ids:
+        # Not a raw DELETE — this may be a different source file than the
+        # superseded report's own, so its watched_files fingerprint (if any)
+        # needs clearing too, or a future rescan would find a report_id that
+        # no longer exists.
+        delete_report(conn, report_id)
+        replaced = True
+
     cur = conn.execute(
         "INSERT INTO reports (company, location, period_start, period_end, period_days, source_filename) "
         "VALUES (?, ?, ?, ?, ?, ?)",
@@ -306,7 +358,7 @@ def import_report(
     ]
     rows[cols].to_sql("stock_entries", conn, if_exists="append", index=False)
 
-    return ImportResult(report_id, meta.period_start, meta.period_end, len(df), replaced)
+    return ImportResult(report_id, meta.period_start, meta.period_end, len(df), replaced, superseded_ids)
 
 
 def list_reports(conn: sqlite3.Connection) -> pd.DataFrame:

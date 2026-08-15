@@ -84,6 +84,7 @@
     <div id="health-gaps"></div>
     <div id="health-problems"></div>
     <div id="health-churn"></div>
+    <div id="health-quality"></div>
   </div>
 
   <div class="card">
@@ -232,14 +233,16 @@ async function loadImportHealth() {
     // one thing to check, not fifty.
     const hasChurn = (churn.new_total + churn.vanished_total) > 0;
     const hasUnmatched = unmatched.total > 0;
+    const quality = data.quality_issues || { total: 0, items: [] };
+    const hasQuality = quality.total > 0;
     const issueCount = data.missing_months.length + data.coverage_gaps.length + data.problem_files.length
-      + (hasChurn ? 1 : 0) + (hasUnmatched ? 1 : 0);
+      + (hasChurn ? 1 : 0) + (hasUnmatched ? 1 : 0) + (hasQuality ? 1 : 0);
 
     // The card only takes up space on the page when there's actually
     // something to look at — same conditional-hide pattern as the Data
     // Quality card below. Most months this'll just be the pill.
     pill.style.display = '';
-    if (!hasGaps && !hasProblems && !hasChurn && !hasUnmatched) {
+    if (!hasGaps && !hasProblems && !hasChurn && !hasUnmatched && !hasQuality) {
       pill.style.background = getComputedStyle(document.documentElement).getPropertyValue('--status-good').trim();
       pill.textContent = '✓ Import health good';
       healthCard.style.display = 'none';
@@ -320,6 +323,31 @@ async function loadImportHealth() {
         details.open = true;
         details.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
+    }
+
+    const qualityEl = document.getElementById('health-quality');
+    if (!hasQuality) {
+      qualityEl.innerHTML = `<div class="health-row health-ok"><span class="icon">✓</span> No data quality issues found in the imported files.</div>`;
+    } else {
+      qualityEl.innerHTML = `
+        <div class="health-row health-warn">
+          <span class="icon">⚠</span>
+          ${quality.total} row${quality.total === 1 ? '' : 's'} with an impossible or unbalanced value
+          (e.g. opening + purchased − sold not matching the reported closing stock) — the source file, not
+          this app, has the wrong number; nothing here has been corrected or excluded from your totals.
+        </div>
+        <table class="problem-files" style="width:100%; margin-top:8px">
+          <thead><tr><th>Brand</th><th>SKU</th><th>Period</th><th>Issue</th></tr></thead>
+          <tbody>${quality.items.map(i => `
+            <tr>
+              <td>${escapeHtml(i.brand)}</td>
+              <td>${escapeHtml(i.sku)}</td>
+              <td>${escapeHtml(i.period_label)}</td>
+              <td>${escapeHtml(i.issue)}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+        ${quality.items.length < quality.total ? `<div class="card-sub" style="margin-top:6px">(showing the first ${quality.items.length} of ${quality.total})</div>` : ''}`;
     }
 
     renderCatalogCard(data.item_catalog, unmatched);
@@ -496,7 +524,10 @@ function setupDropzone({ dzId, inputId, queueId, endpoint, onSuccess, afterEach 
 setupDropzone({
   dzId: 'dropzone', inputId: 'file-input', queueId: 'upload-queue',
   endpoint: '/api/upload',
-  onSuccess: data => `✓ ${data.period_start} to ${data.period_end} · ${data.sku_count.toLocaleString('en-IN')} SKUs`,
+  onSuccess: data => `✓ ${data.period_start} to ${data.period_end} · ${data.sku_count.toLocaleString('en-IN')} SKUs` +
+    (data.superseded_report_ids?.length
+      ? ` (replaced ${data.superseded_report_ids.length} earlier report${data.superseded_report_ids.length === 1 ? '' : 's'} it fully overlapped)`
+      : ''),
   afterEach: refreshReportsFromServer,
 });
 

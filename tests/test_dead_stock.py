@@ -15,11 +15,11 @@ LATEST = pd.Timestamp("2026-07-31")
 
 
 def _entries(rows: list[dict]) -> pd.DataFrame:
-    """rows: dicts with sku, period_end (str), purchase, sales."""
+    """rows: dicts with sku, period_end (str), purchase, sales, sales_free."""
     df = pd.DataFrame(rows)
     df["period_end"] = pd.to_datetime(df["period_end"])
     df["brand"] = df.get("brand", "SOME BRAND")
-    for col in ("purchase", "sales"):
+    for col in ("purchase", "sales", "sales_free"):
         if col not in df.columns:
             df[col] = 0.0
     return df
@@ -39,6 +39,16 @@ def test_recent_purchase_not_dead():
 
 def test_recent_sale_not_dead():
     entries = _entries([{"sku": "A", "period_end": "2026-06-30", "sales": 5}])
+    result = _compute_dead_stock(entries, _current(["A"]), LATEST, pd.Timestamp("2025-01-01"), dead_stock_days=90)
+    row = result[result["sku"] == "A"].iloc[0]
+    assert not row["is_dead"]  # 31 days ago, under the 90-day threshold
+
+
+def test_recent_scheme_sale_with_zero_paid_sales_is_not_dead():
+    # A SKU only moving via scheme/free-goods units (sales=0, sales_free>0)
+    # is still leaving the shelf — it shouldn't read as dead just because
+    # none of its recent activity was a *paid* sale.
+    entries = _entries([{"sku": "A", "period_end": "2026-06-30", "sales": 0, "sales_free": 5}])
     result = _compute_dead_stock(entries, _current(["A"]), LATEST, pd.Timestamp("2025-01-01"), dead_stock_days=90)
     row = result[result["sku"] == "A"].iloc[0]
     assert not row["is_dead"]  # 31 days ago, under the 90-day threshold

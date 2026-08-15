@@ -21,6 +21,7 @@ from .analysis import (
     THRESHOLD_PCT_MAX,
     THRESHOLD_PCT_MIN,
     brand_history,
+    find_data_quality_issues,
     find_import_gaps,
     find_sku_churn,
     find_unmatched_skus,
@@ -315,6 +316,7 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
             "new_skus": [], "new_total": 0, "vanished_skus": [], "vanished_total": 0,
             "likely_renames": [], "renames_total": 0, "previous_period_end": None,
         }
+        quality_issues = find_data_quality_issues(all_entries) if all_entries is not None else []
         return jsonify(
             last_refresh=last_refresh,
             missing_months=gaps["missing_months"],
@@ -323,6 +325,11 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
             item_catalog=catalog_meta,
             unmatched_skus=unmatched_skus,
             sku_churn=sku_churn,
+            # Impossible/inconsistent source rows (see analysis.py's
+            # find_data_quality_issues) — capped defensively, same reasoning
+            # as unmatched_skus's display limit; "total" still reflects the
+            # true count so the headline can't understate the problem.
+            quality_issues={"total": len(quality_issues), "items": quality_issues[:100]},
         )
 
     @app.get("/settings")
@@ -430,6 +437,19 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
                         f"under a different filename."
                     ), 409
 
+                # A partial-overlap conflict (distinct from the exact-match
+                # checks above) has to be caught here too, before the file
+                # becomes real — import_report would still catch it, but by
+                # then os.replace below would have already happened.
+                _, blocking = db.find_superseded_reports(conn, meta)
+                if blocking:
+                    ranges = "; ".join(f"{p_start} to {p_end}" for _, p_start, p_end in blocking)
+                    return jsonify(
+                        error=f"This period ({meta.period_start} to {meta.period_end}) partially overlaps an "
+                        f"existing report without fully covering it ({ranges}). Remove the conflicting report "
+                        "on the Reports page first if this file is correct."
+                    ), 409
+
                 # Validated — now it's safe to make this the real file.
                 dest = uploads_dir / rel_name
                 dest.parent.mkdir(parents=True, exist_ok=True)
@@ -447,6 +467,7 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
                 period_start=meta.period_start.isoformat(),
                 period_end=meta.period_end.isoformat(),
                 sku_count=import_result.sku_count,
+                superseded_report_ids=import_result.superseded_report_ids,
             )
         finally:
             tmp_path.unlink(missing_ok=True)  # no-op if os.replace already moved it into place

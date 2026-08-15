@@ -314,6 +314,8 @@
     <button class="theme-toggle" id="theme-toggle" type="button">Toggle theme</button>
   </header>
 
+  <div class="move-strip" id="gap-strip" style="display:none"></div>
+
   <div class="move-strip" id="move-strip"></div>
 
   <div class="kpi-row" id="kpi-row"></div>
@@ -422,6 +424,20 @@ document.getElementById('hdr-sub').textContent =
   `sales pace based on the trailing ${DATA.meta.trailing_days} days`;
 document.getElementById('footer-note').textContent =
   `Generated locally from imported stock statements · ${DATA.kpis.total_skus.toLocaleString('en-IN')} SKUs across ${DATA.kpis.total_brands.toLocaleString('en-IN')} brands`;
+
+// ---------- incomplete trailing-window warning ----------
+// See templates/dashboard.html's copy of this block for the full reasoning
+// — same check, just no server route to link to from this offline export.
+(function () {
+  const gaps = DATA.meta.trailing_window_gaps || [];
+  if (!gaps.length) return;
+  const totalDays = gaps.reduce((sum, g) => sum + g.days, 0);
+  const el = document.getElementById('gap-strip');
+  el.style.display = '';
+  el.innerHTML = `<span class="status-swatch" style="background:${css.getPropertyValue('--status-warning').trim()}"></span>` +
+    `Sales pace is based on an incomplete history — ${fmtNum(totalDays)} day${totalDays === 1 ? '' : 's'} missing ` +
+    `within the trailing ${DATA.meta.trailing_days}-day window, so it likely understates the real rate.`;
+})();
 
 // ---------- KPI tiles ----------
 const kpis = [

@@ -163,7 +163,14 @@ built-in defaults.
   reused from the status classification above, not a separate metric —
   `dead_stock` → **Non-moving**, `overstock` → **Slow**, `low_stock`/
   `healthy` → **Fast**. `out_of_stock`/`returned` SKUs aren't segmented at
-  all (nothing on hand to tie up capital in right now).
+  all (nothing on hand to tie up capital in right now). "Value" here is
+  whatever the stock statement's own `Value` column prices stock at — this
+  app doesn't recompute it. Checked once against real data: it tracks the
+  item catalog's *By.Rate* (purchase/cost rate) far more closely than MRP,
+  consistent with reading these tiers as "capital tied up" — but that's an
+  inference from one pharmacy's export, not a guarantee for every POS
+  system. If your `Value` column is actually MRP- or selling-price-based,
+  these tiers describe revenue potential instead, not capital tied up.
 - **Data quality**: every imported row is checked for combinations that are
   logically impossible (positive stock with negative value, negative stock,
   negative sales) — not corrected, since there's no way to know the true

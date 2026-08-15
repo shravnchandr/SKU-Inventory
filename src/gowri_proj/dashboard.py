@@ -203,6 +203,7 @@ def build_payload(
             "latest_period_end": meta.latest_period_end.isoformat(),
             "report_count": meta.report_count,
             "trailing_days": meta.trailing_days,
+            "trailing_window_gaps": meta.trailing_window_gaps,
             "thresholds": thresholds,
         },
         "kpis": {

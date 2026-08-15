@@ -42,8 +42,14 @@ def cmd_import(args: argparse.Namespace) -> None:
     print(f"Reading {args.xls_path} ...")
     df, meta = parse_stock_statement(args.xls_path)
     with db.connect(args.db) as conn:
-        result = db.import_report(conn, df, meta, Path(args.xls_path).name, replace=args.replace)
+        try:
+            result = db.import_report(conn, df, meta, Path(args.xls_path).name, replace=args.replace)
+        except ValueError as e:
+            print(f"Not imported: {e}")
+            return
     verb = "Replaced" if result.replaced else "Imported"
+    if result.superseded_report_ids:
+        print(f"(also replaced {len(result.superseded_report_ids)} earlier report(s) it fully overlapped)")
     print(
         f"{verb} report for {result.period_start} to {result.period_end}: "
         f"{result.sku_count:,} SKUs (report id {result.report_id})"

@@ -10,11 +10,14 @@ module combines all imported reports into:
 - a **trailing window**: opening stock, purchases, and sales, all summed/
   anchored across the most recent reports together, covering at least
   TRAILING_DAYS_TARGET days (falling back to all imported history if there
-  isn't that much yet). Sales here is what "days of cover" is measured
-  against, so it gets more precise as more months are imported. Opening
-  and purchases share the same window deliberately — showing them from a
-  single month next to several months of sales would make the numbers look
-  inconsistent even though each is individually correct
+  isn't that much yet). Demand here (paid sales *and* sales_free — scheme/
+  free-goods units leave the shelf the same way — combined; see
+  daily_demand) is what "days of cover" is measured against, so it gets
+  more precise as more months are imported. Paid sales alone stays
+  available separately for revenue reporting (top sellers, trend charts).
+  Opening and purchases share the same window deliberately — showing them
+  from a single month next to several months of sales would make the
+  numbers look inconsistent even though each is individually correct
 - a **trend series**: one data point per imported report, for charting how
   stock value and sales have moved over time
 
@@ -65,6 +68,21 @@ AGING_LOOKBACK_FLOOR_DAYS = 750
 # sorted by value descending, tier A is the top VALUE_TIER_A_PCT% of
 # cumulative value, tier B the next slice up to VALUE_TIER_B_PCT%, tier C
 # the long tail beyond that.
+#
+# "value" here is stock_entries.value, straight from the source stock
+# statement — this app never recomputes it. What that column actually
+# prices stock at (purchase/cost rate vs. MRP vs. something else) is up to
+# the POS export, not something this app controls or verifies row-by-row.
+# Checked once against this app's real data: per-unit value (value /
+# closing_stock) tracks the item catalog's By.Rate far more closely than
+# its MRP (median ratio to By.Rate ~0.85 vs ~0.60 to MRP, of 13.6k matched
+# SKUs) — consistent with a cost/purchase-value basis, i.e. "capital tied
+# up" is a reasonable reading of these ABC tiers for this export. That's an
+# empirical read of one pharmacy's data, not a guarantee for every POS
+# export this app might ever see — if a different install's "Value" column
+# turns out to be MRP- or selling-price-based instead, these tiers would
+# describe revenue potential, not capital tied up, and should be relabeled
+# accordingly rather than assumed.
 VALUE_TIER_A_PCT = 70
 VALUE_TIER_B_PCT = 90
 
@@ -250,7 +268,12 @@ def _compute_dead_stock(
     recent = all_entries[all_entries["period_end"] >= lookback_cutoff]
 
     last_purchase_end = recent[recent["purchase"] > 0].groupby("sku")["period_end"].max()
-    last_sale_end = recent[recent["sales"] > 0].groupby("sku")["period_end"].max()
+    # sales_free counts as activity here too — a SKU only moving via scheme/
+    # free units is still leaving the shelf, not sitting dead (see
+    # daily_demand's docstring below for the fuller reasoning; same
+    # principle, applied to "has this SKU moved at all" instead of "how
+    # fast").
+    last_sale_end = recent[(recent["sales"] > 0) | (recent["sales_free"] > 0)].groupby("sku")["period_end"].max()
 
     result = current_skus[["sku"]].drop_duplicates().set_index("sku")
     result["last_purchase_end"] = last_purchase_end
@@ -327,6 +350,14 @@ class HistoryMeta:
     latest_period_end: date
     report_count: int
     trailing_days: int  # actual days of history the sales rate is based on
+    # Day-level gaps *within* the specific reports the sales-pace figure is
+    # actually computed from (a subset of find_import_gaps's full-history
+    # check) — [] if none. A gap here means the trailing window silently
+    # covers less real time than trailing_days claims, which understates the
+    # true daily rate (dividing real sales by a day count that includes
+    # untracked days) — worth flagging prominently, not just on the Reports
+    # page's Import Health, since it directly taints the number on screen.
+    trailing_window_gaps: list
 
 
 @dataclass
@@ -396,6 +427,7 @@ def summarize_history(
     trailing_reports = _select_trailing_reports(reports, trailing_days_target)
     trailing_days = int(trailing_reports["period_days"].sum())
     trailing_entries = all_entries[all_entries["report_id"].isin(trailing_reports["report_id"])]
+    trailing_window_gaps = find_import_gaps(trailing_reports)["coverage_gaps"]
 
     # --- current snapshot: what's on the shelf right now ---
     # Sliced from trailing_entries, not all_entries — _select_trailing_reports
@@ -418,10 +450,10 @@ def summarize_history(
             # in, which could make a large other_receipt-fed SKU look like it
             # returned more than it ever had (opening + purchase alone) —
             # it didn't; the stock arrived through a channel this column
-            # wasn't counting. Sales_free/other_issue stay separate: they
-            # don't feed "Sold" (that number specifically drives the sales
-            # pace behind days-of-cover/dead-stock, and folding in giveaways
-            # or write-offs would change classifications, not just display).
+            # wasn't counting. other_issue stays separate (a return/write-off
+            # isn't demand, see is_returned below); sales_free is aggregated
+            # on its own too, but *is* folded into daily_demand further down
+            # — see that comment for why.
             total_purchase=trailing_entries["purchase"]
             + trailing_entries["purchase_free"]
             + trailing_entries["other_receipt"]
@@ -432,6 +464,7 @@ def summarize_history(
             trailing_opening=("opening_stock", "first"),
             trailing_purchase=("total_purchase", "sum"),
             trailing_sales=("sales", "sum"),
+            trailing_sales_free=("sales_free", "sum"),
             trailing_other_issue=("other_issue", "sum"),
         )
         .reset_index()
@@ -449,17 +482,26 @@ def summarize_history(
     merged["trailing_opening"] = merged["trailing_opening"].fillna(0.0)
     merged["trailing_purchase"] = merged["trailing_purchase"].fillna(0.0)
     merged["trailing_sales"] = merged["trailing_sales"].fillna(0.0)
+    merged["trailing_sales_free"] = merged["trailing_sales_free"].fillna(0.0)
     merged["trailing_other_issue"] = merged["trailing_other_issue"].fillna(0.0)
     merged = merged.merge(dead_flags, on="sku", how="left")
     merged["is_dead"] = merged["is_dead"].fillna(False)
     merged["days_since_activity"] = merged["days_since_activity"].fillna(0).astype(int)
-    merged["daily_sales"] = merged["trailing_sales"] / trailing_days if trailing_days > 0 else 0.0
-    # Zero stock, nothing sold, but stock actually left via a return/write-off
-    # (other_issue) somewhere in the trailing window — this SKU wasn't sold
-    # through, it was deliberately sent back because it wasn't moving. That's
-    # a different signal than "sold out, might need restocking" (out_of_stock)
-    # even though both end up at zero on the shelf — see _status()'s docstring.
-    merged["is_returned"] = (merged["trailing_sales"] == 0) & (merged["trailing_other_issue"] > 0)
+    # daily_demand (not daily_sales) drives days_of_cover/status below —
+    # paid sales *and* sales_free (scheme/free-goods units) both leave the
+    # shelf the same way, so both count as real depletion. Paid-only
+    # "sales" stays separately available for revenue reporting (see the
+    # rename below and top_skus_by_sales) — this only changes the rate
+    # classification is based on, not what gets displayed as "Sold".
+    merged["trailing_demand"] = merged["trailing_sales"] + merged["trailing_sales_free"]
+    merged["daily_demand"] = merged["trailing_demand"] / trailing_days if trailing_days > 0 else 0.0
+    # Zero stock, nothing sold or given away, but stock actually left via a
+    # return/write-off (other_issue) somewhere in the trailing window — this
+    # SKU wasn't sold through, it was deliberately sent back because it
+    # wasn't moving. That's a different signal than "sold out, might need
+    # restocking" (out_of_stock) even though both end up at zero on the
+    # shelf — see _status()'s docstring.
+    merged["is_returned"] = (merged["trailing_demand"] == 0) & (merged["trailing_other_issue"] > 0)
     # Vectorized rather than merged.apply(..., axis=1) — a row-wise Python
     # loop over every current SKU (15k+ today) was the remaining hot spot
     # in this module once _compute_dead_stock got bounded (see
@@ -467,7 +509,7 @@ def summarize_history(
     # chain exactly: conditions are checked in the same priority order,
     # first match wins — keep the two in sync if either changes.
     merged["days_of_cover"] = np.where(
-        merged["daily_sales"] > 0, merged["closing_stock"] / merged["daily_sales"], float("inf")
+        merged["daily_demand"] > 0, merged["closing_stock"] / merged["daily_demand"], float("inf")
     )
     merged["status"] = np.select(
         [
@@ -554,6 +596,7 @@ def summarize_history(
         latest_period_end=latest["period_end"].date(),
         report_count=len(reports),
         trailing_days=trailing_days,
+        trailing_window_gaps=trailing_window_gaps,
     )
 
     return InventorySummary(
@@ -863,6 +906,27 @@ def brand_history(all_entries: pd.DataFrame, brand: str) -> list[dict]:
 # only when the magnitude is large enough to plausibly matter.
 _VALUE_NOISE_FLOOR = 0.01  # rupees
 
+# Same idea for the stock-flow balance check below: opening + purchased -
+# sold should equal closing, but a little slack is needed for the source
+# spreadsheet's own rounding. Checked against this app's real data (255k
+# rows): the balance holds exactly for all but two rows, both off by a full
+# 5 units — a real discrepancy, not noise — so this tolerance only needs to
+# be wide enough to swallow true floating-point rounding, not real errors.
+_STOCK_BALANCE_TOLERANCE = 0.5  # units
+
+
+def _stock_balance_diff(entries):
+    """opening + purchased (paid + free + other receipts) - sold (paid +
+    free + other issues) - closing. Zero when the period's numbers actually
+    balance; works on either a full DataFrame (vectorized, for filtering)
+    or a single row (for the per-row message below) — the arithmetic is
+    identical either way.
+    """
+    return (
+        entries["opening_stock"] + entries["purchase"] + entries["purchase_free"] + entries["other_receipt"]
+        - entries["sales"] - entries["sales_free"] - entries["other_issue"] - entries["closing_stock"]
+    )
+
 
 def _quality_checks(row: pd.Series) -> list[str]:
     issues = []
@@ -874,16 +938,21 @@ def _quality_checks(row: pd.Series) -> list[str]:
         issues.append("Negative opening stock")
     if row["sales"] < 0:
         issues.append("Negative sales (possibly a return)")
+    balance_diff = _stock_balance_diff(row)
+    if abs(balance_diff) > _STOCK_BALANCE_TOLERANCE:
+        issues.append(f"Opening + purchased - sold doesn't balance to closing stock (off by {balance_diff:+.1f})")
     return issues
 
 
 def find_data_quality_issues(all_entries: pd.DataFrame) -> list[dict]:
     """Scan every imported row for impossible combinations, most recent first."""
+    balance_diff = _stock_balance_diff(all_entries)
     candidates = all_entries[
         ((all_entries["closing_stock"] > 0) & (all_entries["value"] < -_VALUE_NOISE_FLOOR))
         | (all_entries["closing_stock"] < 0)
         | (all_entries["opening_stock"] < 0)
         | (all_entries["sales"] < 0)
+        | (balance_diff.abs() > _STOCK_BALANCE_TOLERANCE)
     ]
     out = []
     for _, r in candidates.sort_values("period_end", ascending=False).iterrows():
