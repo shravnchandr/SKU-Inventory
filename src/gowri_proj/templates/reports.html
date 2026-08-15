@@ -296,7 +296,7 @@ async function loadImportHealth() {
       const rows = [];
       if (!hasChurn) {
         const renameNote = churn.renames_total
-          ? ` (${churn.renames_total} name${churn.renames_total === 1 ? '' : 's'} changed slightly — e.g. a "(NON)" tag — nothing to check)`
+          ? ` (${churn.renames_total} name${churn.renames_total === 1 ? '' : 's'} renamed in your item list — nothing to check)`
           : '';
         rows.push(`<div class="health-row health-ok"><span class="icon">✓</span> No unexplained SKU changes since your last import${renameNote}.</div>`);
       } else {
@@ -310,7 +310,7 @@ async function loadImportHealth() {
             <a href="#card-item-catalog" id="jump-to-catalog" style="margin-left:4px">Check your item code list →</a>
           </div>`);
         if (churn.renames_total) {
-          rows.push(`<div class="health-row" style="color:var(--text-muted)"><span class="icon">·</span> ${churn.renames_total} other name change${churn.renames_total === 1 ? '' : 's'} looked like the same item (e.g. a "(NON)" tag) — not counted above.</div>`);
+          rows.push(`<div class="health-row" style="color:var(--text-muted)"><span class="icon">·</span> ${churn.renames_total} other name change${churn.renames_total === 1 ? '' : 's'} confirmed as the same item via your item list — not counted above.</div>`);
         }
       }
       churnEl.innerHTML = rows.join('');

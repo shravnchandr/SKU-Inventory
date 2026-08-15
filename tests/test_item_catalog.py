@@ -1,17 +1,20 @@
-"""Unit tests for parse_item_list, find_unmatched_skus, and find_sku_churn.
+"""Unit tests for parse_item_list, find_unmatched_skus, find_sku_churn, and
+the catalog import's code-anchored rename detection.
 
 parse_item_list parses the POS system's "item list" export (a different
 shape than the stock statement — brand-header rows + item rows, no "Sub
 Total"). find_unmatched_skus is the pure set-difference that flags any
 currently-stocked SKU name absent from that catalog entirely. find_sku_churn
-is the report-to-report diff that actually triggers the "go check your item
-list" prompt — a rename shows up there directly, without needing a catalog
-imported at all.
+is the report-to-report diff that triggers the "go check your item list"
+prompt; a rename is only paired off once db.import_item_catalog has actually
+recorded that code's old name -> new name transition (there's no code in the
+stock statement itself to resolve it from that side).
 """
 import openpyxl
 import pandas as pd
 import pytest
 
+from src.gowri_proj import db
 from src.gowri_proj.analysis import find_sku_churn, find_unmatched_skus
 from src.gowri_proj.parser import parse_item_list
 
@@ -221,18 +224,19 @@ def test_find_sku_churn_only_compares_the_latest_two_reports():
     assert result["vanished_total"] == 0
 
 
-def test_find_sku_churn_pairs_off_a_non_moving_tag_toggling():
-    # The pharmacy's export marks an item "don't reorder" by appending
-    # "(NON)" to its name — a real recurring pattern, not a rename or a
-    # genuinely different product. Should be paired off, not counted as
-    # 1 new + 1 vanished.
+def test_find_sku_churn_pairs_a_rename_confirmed_by_the_alias_map():
+    # The alias map (db.get_name_change_map) says code C1 went from
+    # "AMLOKIND 5MG TAB" to "AMLOKIND 5MG TAB (NON)" — a code-anchored fact,
+    # not a guess — so this pairs off instead of counting as 1 new + 1
+    # vanished.
     entries = _all_entries(
         [
             {"report_id": 1, "period_end": "2026-06-30", "skus": [{"sku": "AMLOKIND 5MG TAB", "brand": "MICRO", "closing_stock": 5, "value": 500.0}]},
             {"report_id": 2, "period_end": "2026-07-31", "skus": [{"sku": "AMLOKIND 5MG TAB (NON)", "brand": "MICRO", "closing_stock": 5, "value": 500.0}]},
         ]
     )
-    result = find_sku_churn(entries)
+    alias_map = {"AMLOKIND 5MG TAB": "AMLOKIND 5MG TAB (NON)"}
+    result = find_sku_churn(entries, alias_map)
     assert result["new_total"] == 0
     assert result["vanished_total"] == 0
     assert result["renames_total"] == 1
@@ -241,13 +245,15 @@ def test_find_sku_churn_pairs_off_a_non_moving_tag_toggling():
     ]
 
 
-def test_find_sku_churn_does_not_pair_across_brands():
-    # Near-identical names, different brands — a coincidence, not the same
-    # item; pairing across brands would hide a genuine brand mix-up.
+def test_find_sku_churn_does_not_pair_without_a_confirming_alias():
+    # No item list uploaded yet (alias_map is empty) — even an obviously
+    # cosmetic difference like "10G" -> "10GM" stays an unresolved new +
+    # vanished pair. There's no code in the stock statement itself to
+    # resolve it from; only a fresh catalog import can.
     entries = _all_entries(
         [
-            {"report_id": 1, "period_end": "2026-06-30", "skus": [{"sku": "PARACETAMOL 500MG TAB", "brand": "CIPLA", "closing_stock": 5, "value": 500.0}]},
-            {"report_id": 2, "period_end": "2026-07-31", "skus": [{"sku": "PARACETAMOL 500MG TAB (NON)", "brand": "SUN PHARMA", "closing_stock": 5, "value": 500.0}]},
+            {"report_id": 1, "period_end": "2026-06-30", "skus": [{"sku": "XYZ 10G", "brand": "MICRO", "closing_stock": 5, "value": 500.0}]},
+            {"report_id": 2, "period_end": "2026-07-31", "skus": [{"sku": "XYZ 10GM", "brand": "MICRO", "closing_stock": 5, "value": 500.0}]},
         ]
     )
     result = find_sku_churn(entries)
@@ -256,16 +262,93 @@ def test_find_sku_churn_does_not_pair_across_brands():
     assert result["vanished_total"] == 1
 
 
-def test_find_sku_churn_does_not_pair_dissimilar_names_even_same_brand():
-    # A real product swap within the same brand shouldn't be swallowed by
-    # the pairing heuristic just because the brand matches.
+def test_find_sku_churn_does_not_pair_a_different_strength_even_with_an_unrelated_alias():
+    # A real product swap (different strength) shouldn't be swallowed just
+    # because the alias map happens to contain unrelated entries — the old
+    # name has to be a key that maps to exactly this new name, nothing looser.
     entries = _all_entries(
         [
-            {"report_id": 1, "period_end": "2026-06-30", "skus": [{"sku": "OTODAC-CL EAR DROP", "brand": "X", "closing_stock": 5, "value": 500.0}]},
-            {"report_id": 2, "period_end": "2026-07-31", "skus": [{"sku": "YASMIN TAB", "brand": "X", "closing_stock": 5, "value": 500.0}]},
+            {"report_id": 1, "period_end": "2026-06-30", "skus": [{"sku": "DOLO 650", "brand": "MICRO", "closing_stock": 5, "value": 500.0}]},
+            {"report_id": 2, "period_end": "2026-07-31", "skus": [{"sku": "DOLO 350", "brand": "MICRO", "closing_stock": 5, "value": 500.0}]},
         ]
     )
-    result = find_sku_churn(entries)
+    alias_map = {"SOMETHING ELSE": "SOMETHING ELSE V2"}
+    result = find_sku_churn(entries, alias_map)
     assert result["renames_total"] == 0
     assert result["new_total"] == 1
     assert result["vanished_total"] == 1
+
+
+def test_find_sku_churn_ignores_an_alias_whose_target_isnt_in_the_new_report():
+    # The catalog recorded a rename, but the "new" name it points to isn't
+    # actually present in this report pair (e.g. the alias is stale, or
+    # belongs to a different period) — shouldn't fabricate a pairing.
+    entries = _all_entries(
+        [
+            {
+                "report_id": 1, "period_end": "2026-06-30",
+                "skus": [{"sku": "OLD NAME", "brand": "X", "closing_stock": 5, "value": 500.0}],
+            },
+            {
+                "report_id": 2, "period_end": "2026-07-31",
+                "skus": [{"sku": "UNRELATED STABLE SKU", "brand": "X", "closing_stock": 1, "value": 1.0}],
+            },
+        ]
+    )
+    alias_map = {"OLD NAME": "NEW NAME THAT NEVER SHOWS UP"}
+    result = find_sku_churn(entries, alias_map)
+    assert result["renames_total"] == 0
+    assert result["vanished_total"] == 1
+
+
+def _catalog_df(rows):
+    """rows: dicts with code, brand, product_name, packing, mrp, by_rate,
+    tax_pct, hsn, long_name."""
+    cols = ["code", "brand", "product_name", "packing", "mrp", "by_rate", "tax_pct", "hsn", "long_name"]
+    return pd.DataFrame(rows)[cols]
+
+
+def _catalog_row(code, product_name, long_name, brand="MICRO"):
+    return {
+        "code": code, "brand": brand, "product_name": product_name, "packing": "1S",
+        "mrp": 1.0, "by_rate": 1.0, "tax_pct": 12.0, "hsn": "3004", "long_name": long_name,
+    }
+
+
+def test_import_item_catalog_logs_a_rename_when_a_codes_name_changes(tmp_path):
+    with db.connect(str(tmp_path / "test.db")) as conn:
+        db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "XYZ 10G", "XYZ 10G TUBE")]))
+        db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "XYZ 10GM", "XYZ 10GM TUBE")]))
+        alias_map = db.get_name_change_map(conn)
+    assert alias_map["XYZ 10G"] == "XYZ 10GM"
+    assert alias_map["XYZ 10G TUBE"] == "XYZ 10GM TUBE"
+
+
+def test_import_item_catalog_logs_nothing_when_names_are_unchanged(tmp_path):
+    with db.connect(str(tmp_path / "test.db")) as conn:
+        db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "XYZ 10G", "XYZ 10G TUBE")]))
+        db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "XYZ 10G", "XYZ 10G TUBE")]))
+        alias_map = db.get_name_change_map(conn)
+    assert alias_map == {}
+
+
+def test_import_item_catalog_logs_nothing_for_a_brand_new_code(tmp_path):
+    # A code that's never been seen before has no "old" name to diff
+    # against — it's a genuinely new catalog entry, not a rename.
+    with db.connect(str(tmp_path / "test.db")) as conn:
+        db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "XYZ 10G", "XYZ 10G TUBE")]))
+        db.import_item_catalog(
+            conn,
+            _catalog_df([_catalog_row("C1", "XYZ 10G", "XYZ 10G TUBE"), _catalog_row("C2", "NEW ITEM", "NEW ITEM LONG")]),
+        )
+        alias_map = db.get_name_change_map(conn)
+    assert alias_map == {}
+
+
+def test_import_item_catalog_replaces_the_whole_table(tmp_path):
+    with db.connect(str(tmp_path / "test.db")) as conn:
+        db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "A", "A LONG")]))
+        count = db.import_item_catalog(conn, _catalog_df([_catalog_row("C2", "B", "B LONG")]))
+        meta = db.get_item_catalog_meta(conn)
+    assert count == 1
+    assert meta["item_count"] == 1

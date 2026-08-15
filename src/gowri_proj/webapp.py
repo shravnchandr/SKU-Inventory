@@ -271,6 +271,7 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
             problems_df = db.list_watched_files_problems(conn)
             catalog_meta = db.get_item_catalog_meta(conn)
             catalog_names = db.list_item_catalog_names(conn) if catalog_meta else set()
+            alias_map = db.get_name_change_map(conn)
         problem_files = [
             {
                 "filename": r["filename"],
@@ -284,7 +285,7 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
         unmatched_skus = {"total": 0, "items": []}
         if catalog_names and summary is not None:
             unmatched_skus = find_unmatched_skus(summary.enriched, catalog_names)
-        sku_churn = find_sku_churn(all_entries) if all_entries is not None else {
+        sku_churn = find_sku_churn(all_entries, alias_map) if all_entries is not None else {
             "new_skus": [], "new_total": 0, "vanished_skus": [], "vanished_total": 0,
             "likely_renames": [], "renames_total": 0, "previous_period_end": None,
         }

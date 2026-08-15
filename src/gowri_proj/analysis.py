@@ -33,7 +33,6 @@ sales activity:
 """
 from __future__ import annotations
 
-import difflib
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -511,47 +510,31 @@ def search_skus(enriched: pd.DataFrame, query: str, limit: int = 50) -> list[dic
 
 
 
-# Below this similarity ratio (difflib.SequenceMatcher on the raw names,
-# same brand only), a "new" and "vanished" name are unrelated products, not
-# the same item under a slightly different name — checked against this
-# app's real data: same-item pairs (a "(NON)" suffix toggled on/off marking
-# an item as non-moving/do-not-reorder, or a stray space, or a unit written
-# "10G" one month and "10GM" the next) cluster at 0.75+, while unrelated
-# SKUs that happen to vanish/appear the same month top out around 0.6.
-# 0.75 sits in the gap between the two.
-RENAME_SIMILARITY_THRESHOLD = 0.75
-
-
-def _pair_likely_renames(
-    vanished_rows: dict[str, dict], new_rows: dict[str, dict]
+def _pair_renames_via_catalog(
+    vanished_rows: dict[str, dict], new_rows: dict[str, dict], alias_map: dict[str, str]
 ) -> tuple[list[dict], set[str], set[str]]:
-    """Greedily pair each vanished name with its most-similar same-brand new
-    name, for pairs that clear RENAME_SIMILARITY_THRESHOLD — almost always
-    the same item still, just relisted under a slightly different name (a
-    "(NON)" non-moving tag added/removed, a unit spelled out differently),
-    not a real rename. A pharmacy's export naturally re-lists a huge
-    fraction of "changes" every month as exactly this kind of noise; pairing
-    them up here means the real new/vanished counts (and the "go check your
-    item list" nudge they drive) only reflect actual product turnover.
+    """Pair a vanished name with a new name only when the item catalog has
+    recorded an actual code-anchored rename between exactly those two names
+    (see db.get_name_change_map) — not a text-similarity guess. Same code
+    means definitely the same item, so this never merges two genuinely
+    different products (e.g. two different strengths of the same drug) the
+    way a similarity score alone could.
+
+    This means a rename only gets recognized once the item list has been
+    re-uploaded *after* the POS system's own rename — until then, "XYZ 10G"
+    and "XYZ 10GM" show up as an unresolved vanished/new pair, same as any
+    other churn. That's expected, not a bug: there's no code in the monthly
+    stock statement itself to resolve it any earlier.
 
     Returns (likely_pairs, paired_vanished_names, paired_new_names).
     """
-    candidates = []
-    for v_name, v_row in vanished_rows.items():
-        for n_name, n_row in new_rows.items():
-            if v_row["brand"] != n_row["brand"]:
-                continue
-            score = difflib.SequenceMatcher(None, v_name, n_name).ratio()
-            if score >= RENAME_SIMILARITY_THRESHOLD:
-                candidates.append((score, v_name, n_name))
-    candidates.sort(key=lambda c: c[0], reverse=True)
-
     paired_vanished: set[str] = set()
     paired_new: set[str] = set()
     pairs = []
-    for score, v_name, n_name in candidates:
-        if v_name in paired_vanished or n_name in paired_new:
-            continue  # each name pairs with at most one match, highest-scoring first
+    for v_name, v_row in vanished_rows.items():
+        n_name = alias_map.get(v_name)
+        if n_name is None or n_name not in new_rows or n_name in paired_new:
+            continue
         paired_vanished.add(v_name)
         paired_new.add(n_name)
         pairs.append(
@@ -567,12 +550,14 @@ def _pair_likely_renames(
     return pairs, paired_vanished, paired_new
 
 
-def find_sku_churn(all_entries: pd.DataFrame, limit: int = 50) -> dict:
+def find_sku_churn(
+    all_entries: pd.DataFrame, alias_map: dict[str, str] | None = None, limit: int = 50
+) -> dict:
     """SKU names that appeared or disappeared between the two most recently
-    imported reports — after pairing off names that are almost certainly
-    the same item relisted slightly differently (see _pair_likely_renames),
-    so a "(NON)" tag toggling or a unit spelled out differently doesn't
-    read as "1 new + 1 vanished."
+    imported reports — after pairing off names the item catalog confirms are
+    the same code renamed (see _pair_renames_via_catalog), so a "(NON)" tag
+    toggling or a unit respelled after a fresh item-list upload doesn't read
+    as "1 new + 1 vanished" forever.
 
     What's left after pairing is the actual trigger for "go check your item
     list": a genuinely new or discontinued-looking name, unrelated to
@@ -617,7 +602,9 @@ def find_sku_churn(all_entries: pd.DataFrame, limit: int = 50) -> dict:
 
     new_rows = _row_map(latest, new_names)
     vanished_rows = _row_map(previous, vanished_names)
-    rename_pairs, paired_vanished, paired_new = _pair_likely_renames(vanished_rows, new_rows)
+    rename_pairs, paired_vanished, paired_new = _pair_renames_via_catalog(
+        vanished_rows, new_rows, alias_map or {}
+    )
 
     def _rows(rows: dict[str, dict], names: set[str]) -> list[dict]:
         items = sorted(

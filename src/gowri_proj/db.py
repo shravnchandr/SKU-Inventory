@@ -104,6 +104,22 @@ CREATE TABLE IF NOT EXISTS item_catalog (
 );
 
 CREATE INDEX IF NOT EXISTS idx_item_catalog_product ON item_catalog(product_name);
+
+-- A code-anchored rename: item_catalog has no history of its own (it's a
+-- full replace on every import), so whenever a re-import finds an existing
+-- code now carrying a different name, that transition is logged here before
+-- the old value is lost. Same code = definitely the same item, so this is
+-- used to pair off a "vanished" and "new" SKU name in find_sku_churn without
+-- guessing from text similarity. Append-only — a rename detected months ago
+-- should still resolve churn today.
+CREATE TABLE IF NOT EXISTS item_name_changes (
+    code TEXT NOT NULL,
+    old_name TEXT NOT NULL,
+    new_name TEXT NOT NULL,
+    detected_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_item_name_changes_old ON item_name_changes(old_name);
 """
 
 
@@ -353,14 +369,53 @@ def import_item_catalog(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
     only ever one "current" catalog — unlike reports, which each represent a
     distinct period and accumulate — so every import is a full replace, not
     an accumulation.
+
+    Before replacing, diff the incoming rows against what's stored for each
+    code: a code that already existed but now carries a different
+    product_name/long_name just got renamed in the POS system, and that
+    transition is logged to item_name_changes — otherwise the old name is
+    gone the moment this DELETE runs, with nothing left to pair it against.
     """
+    previous = pd.read_sql("SELECT code, product_name, long_name FROM item_catalog", conn)
+    prev_names = {row.code: (row.product_name, row.long_name) for row in previous.itertuples(index=False)}
+
     conn.execute("DELETE FROM item_catalog")
     cols = [
         "code", "brand", "product_name", "packing", "mrp", "by_rate",
         "tax_pct", "hsn", "long_name",
     ]
     df[cols].to_sql("item_catalog", conn, if_exists="append", index=False)
+
+    changes = []
+    for row in df.itertuples(index=False):
+        prev = prev_names.get(row.code)
+        if prev is None:
+            continue
+        old_product, old_long = prev
+        if old_product and row.product_name and old_product != row.product_name:
+            changes.append((row.code, old_product, row.product_name))
+        if old_long and row.long_name and old_long != row.long_name and old_long != old_product:
+            changes.append((row.code, old_long, row.long_name))
+    if changes:
+        conn.executemany(
+            "INSERT INTO item_name_changes (code, old_name, new_name) VALUES (?, ?, ?)",
+            changes,
+        )
     return len(df)
+
+
+def get_name_change_map(conn: sqlite3.Connection) -> dict[str, str]:
+    """old_name -> latest known new_name, from every code-anchored rename an
+    item_catalog re-import has ever detected. Used by find_sku_churn to pair
+    a vanished/new SKU name without guessing from text similarity.
+    """
+    rows = conn.execute(
+        "SELECT old_name, new_name FROM item_name_changes ORDER BY rowid ASC"
+    ).fetchall()
+    mapping: dict[str, str] = {}
+    for old_name, new_name in rows:
+        mapping[old_name] = new_name
+    return mapping
 
 
 def get_item_catalog_meta(conn: sqlite3.Connection) -> dict | None:
