@@ -448,11 +448,15 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
                     error="No item rows could be read from this file — it may not be an item list export."
                 ), 422
 
-            dest = uploads_dir / ITEM_CATALOG_FILENAME
-            os.replace(tmp_path, dest)
-
+            # Import to the DB before touching the saved file — if the
+            # import fails (e.g. a duplicate code), the canonical file on
+            # disk should still match what's actually in the DB, not a
+            # newer file the import never actually accepted.
             with db.connect(app.config["DB_PATH"]) as conn:
                 item_count = db.import_item_catalog(conn, df)
+
+            dest = uploads_dir / ITEM_CATALOG_FILENAME
+            os.replace(tmp_path, dest)
 
             return jsonify(
                 status="imported",

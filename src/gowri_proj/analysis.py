@@ -201,7 +201,13 @@ def _dead_stock_aging(dead_stock: pd.DataFrame) -> list:
 
 def _select_trailing_reports(reports: pd.DataFrame, trailing_days_target: int) -> pd.DataFrame:
     """Most recent reports whose combined period_days reaches the target (or all of them)."""
-    ordered = reports.sort_values("period_end", ascending=False)
+    # Tiebroken on period_start too, matching summarize_history's own
+    # "latest report" ordering — without it, two reports sharing a
+    # period_end (e.g. a wide baseline import and a monthly report both
+    # ending the same date) could sort inconsistently between here and
+    # there, and the actual latest report could be left out of the
+    # trailing window entirely.
+    ordered = reports.sort_values(["period_end", "period_start"], ascending=False)
     running = 0
     ids = []
     for _, r in ordered.iterrows():
@@ -566,7 +572,15 @@ def find_sku_churn(
     if all_entries.empty:
         return empty
 
-    period_ends = all_entries[["report_id", "period_end"]].drop_duplicates().sort_values("period_end")
+    # Tiebroken on period_start too, matching summarize_history's own
+    # "latest report" ordering (see _select_trailing_reports) — otherwise
+    # two reports sharing a period_end could compare as the wrong "latest
+    # two", surfacing false new/vanished SKUs.
+    period_ends = (
+        all_entries[["report_id", "period_start", "period_end"]]
+        .drop_duplicates()
+        .sort_values(["period_end", "period_start"])
+    )
     if len(period_ends) < 2:
         return empty
 

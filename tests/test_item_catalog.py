@@ -159,12 +159,19 @@ def test_find_unmatched_skus_total_reflects_true_count_beyond_display_limit():
 
 
 def _all_entries(reports: list[dict]) -> pd.DataFrame:
-    """reports: list of {report_id, period_end, skus: [{sku, brand, closing_stock, value}]}."""
+    """reports: list of {report_id, period_end, skus: [{sku, brand, closing_stock, value}]}.
+    period_start defaults to period_end (these tests don't exercise the
+    period_start tiebreak — see test_report_period_tiebreak.py for that).
+    """
     rows = []
     for r in reports:
+        period_start = r.get("period_start", r["period_end"])
         for sku_row in r["skus"]:
-            rows.append({"report_id": r["report_id"], "period_end": r["period_end"], **sku_row})
+            rows.append(
+                {"report_id": r["report_id"], "period_start": period_start, "period_end": r["period_end"], **sku_row}
+            )
     df = pd.DataFrame(rows)
+    df["period_start"] = pd.to_datetime(df["period_start"])
     df["period_end"] = pd.to_datetime(df["period_end"])
     return df
 
