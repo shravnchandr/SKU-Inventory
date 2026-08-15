@@ -488,10 +488,21 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
             # disk should still match what's actually in the DB, not a
             # newer file the import never actually accepted.
             with db.connect(app.config["DB_PATH"]) as conn:
+                previous_catalog = db.get_item_catalog_df(conn)
                 item_count = db.import_item_catalog(conn, df)
 
             dest = uploads_dir / ITEM_CATALOG_FILENAME
-            os.replace(tmp_path, dest)
+            try:
+                os.replace(tmp_path, dest)
+            except OSError as e:
+                # The DB import above already committed — if writing the
+                # file back out fails (disk full, permissions, ...), restore
+                # the DB to the pre-upload snapshot so it still matches what
+                # the still-intact file on disk actually says, rather than
+                # disagreeing with it in the other direction.
+                with db.connect(app.config["DB_PATH"]) as conn:
+                    db.restore_item_catalog(conn, previous_catalog)
+                return jsonify(error=f"Could not save the uploaded file ({e}). The catalog was not changed."), 500
 
             return jsonify(
                 status="imported",

@@ -312,9 +312,7 @@ function renderTable(key) {
     `<tr class="row-clickable" data-brand="${escapeHtml(r.brand || '')}" data-sku="${escapeHtml(r.sku || '')}">` +
     `${cols.map(([k]) => `<td>${cellText(r, k)}</td>`).join('')}</tr>`
   ).join('') || emptyStateHtml(key);
-  tbody.querySelectorAll('tr.row-clickable').forEach(tr => {
-    tr.addEventListener('click', () => openSkuDetail(tr.dataset.brand, tr.dataset.sku));
-  });
+  makeRowsClickable(tbody.querySelectorAll('tr.row-clickable'), tr => openSkuDetail(tr.dataset.brand, tr.dataset.sku));
   document.querySelector(`[data-count="${key}"]`).textContent =
     rows.length > shown.length ? `Showing ${shown.length} of ${rows.length}` : `${rows.length} rows`;
 
@@ -449,9 +447,7 @@ TAB_DEFS.forEach(t => renderTable(t.key));
           <tbody>${rowsHtml}</tbody>
         </table>
       </div>`;
-    detailEl.querySelectorAll('tr.row-clickable').forEach(tr => {
-      tr.addEventListener('click', () => openSkuDetail(tr.dataset.brand, tr.dataset.sku));
-    });
+    makeRowsClickable(detailEl.querySelectorAll('tr.row-clickable'), tr => openSkuDetail(tr.dataset.brand, tr.dataset.sku));
   }
   groupsEl.querySelectorAll('.stat-tile-clickable').forEach(el => {
     el.addEventListener('click', () => selectSegment(el.dataset.tier, el.dataset.movement));

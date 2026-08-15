@@ -386,6 +386,7 @@
   table.data-table th.sorted::after { content: " " attr(data-dir); font-size: 0.7em; }
   table.data-table tbody tr:hover { background: var(--page); }
   table.data-table tbody tr.row-clickable { cursor: pointer; }
+  table.data-table tbody tr.row-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 </style>
 {% block head %}{% endblock %}
 </head>
@@ -600,6 +601,22 @@ function escapeHtml(s) {
 // ---------- shared formatters ----------
 const fmtINR = n => '₹' + Number(n).toLocaleString('en-IN', {maximumFractionDigits: 0});
 const fmtNum = n => Number(n).toLocaleString('en-IN', {maximumFractionDigits: 0});
+
+// Makes already-rendered `tr.row-clickable` elements keyboard-operable, not
+// just mouse-clickable — every clickable table row in the app (action-list
+// tables, the value-segments detail table, a brand's SKU list) goes through
+// this instead of wiring click alone, so tab+Enter/Space works everywhere
+// a click does.
+function makeRowsClickable(rows, onActivate) {
+  rows.forEach(tr => {
+    tr.tabIndex = 0;
+    tr.setAttribute('role', 'button');
+    tr.addEventListener('click', () => onActivate(tr));
+    tr.addEventListener('keydown', e => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onActivate(tr); }
+    });
+  });
+}
 
 // ---------- status badge (used by search results + SKU/brand detail panels) ----------
 // Hardcoded rather than derived from a page's embedded data — this needs to
@@ -896,9 +913,7 @@ function openBrandDetail(brand) {
         </table>
       </div>`;
 
-    body.querySelectorAll('tr.row-clickable').forEach(tr => {
-      tr.addEventListener('click', () => openSkuDetail(brand, tr.dataset.sku));
-    });
+    makeRowsClickable(body.querySelectorAll('tr.row-clickable'), tr => openSkuDetail(brand, tr.dataset.sku));
 
     if (data.history.length >= 2) {
       const color = getComputedStyle(document.documentElement).getPropertyValue('--series-1').trim();

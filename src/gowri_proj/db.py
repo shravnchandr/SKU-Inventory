@@ -405,12 +405,7 @@ def import_item_catalog(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
     previous = pd.read_sql("SELECT code, product_name, long_name FROM item_catalog", conn)
     prev_names = {row.code: (row.product_name, row.long_name) for row in previous.itertuples(index=False)}
 
-    conn.execute("DELETE FROM item_catalog")
-    cols = [
-        "code", "brand", "product_name", "packing", "mrp", "by_rate",
-        "tax_pct", "hsn", "long_name",
-    ]
-    df[cols].to_sql("item_catalog", conn, if_exists="append", index=False)
+    count = _replace_item_catalog_table(conn, df)
 
     changes = []
     for row in df.itertuples(index=False):
@@ -427,7 +422,36 @@ def import_item_catalog(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
             "INSERT INTO item_name_changes (code, old_name, new_name) VALUES (?, ?, ?)",
             changes,
         )
+    return count
+
+
+ITEM_CATALOG_COLUMNS = [
+    "code", "brand", "product_name", "packing", "mrp", "by_rate", "tax_pct", "hsn", "long_name",
+]
+
+
+def _replace_item_catalog_table(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
+    conn.execute("DELETE FROM item_catalog")
+    df[ITEM_CATALOG_COLUMNS].to_sql("item_catalog", conn, if_exists="append", index=False)
     return len(df)
+
+
+def get_item_catalog_df(conn: sqlite3.Connection) -> pd.DataFrame:
+    """The full current catalog, in the shape import_item_catalog/
+    restore_item_catalog expect — used to snapshot the catalog before an
+    upload, so a failure partway through can be rolled back to it.
+    """
+    return pd.read_sql(f"SELECT {', '.join(ITEM_CATALOG_COLUMNS)} FROM item_catalog", conn)
+
+
+def restore_item_catalog(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
+    """Put the catalog back exactly as `df` (typically a get_item_catalog_df
+    snapshot taken just before a failed upload) — a raw replace, deliberately
+    skipping import_item_catalog's rename-diff logging: this is undoing a
+    change that never actually completed, not a real POS-side rename, so it
+    shouldn't be recorded as one in item_name_changes.
+    """
+    return _replace_item_catalog_table(conn, df)
 
 
 def get_name_change_map(conn: sqlite3.Connection) -> dict[str, str]:
