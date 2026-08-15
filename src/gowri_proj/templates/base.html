@@ -350,6 +350,9 @@
   .status-badge { font-size: var(--text-xs); font-weight: 600; padding: 3px 9px; border-radius: var(--radius-pill); color: #fff; display: inline-block; }
   .detail-kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin-bottom: 18px; }
   .detail-section-title { font-size: var(--text-base); font-weight: 600; color: var(--text-secondary); margin: 18px 0 8px; }
+  /* Shared by the SKU detail modal (global, any page) and the Dashboard's
+     value-segments card — same "tier x movement" policy blurb, two places. */
+  .segment-policy { font-size: var(--text-sm); color: var(--text-secondary); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin: 14px 0; }
 
   /* ---------- shared stat tile ---------- */
   /* Replaces what used to be three near-identical implementations
@@ -801,10 +804,15 @@ function openSkuDetail(brand, sku) {
         </div>`
       : `<div class="detail-kpis"><div class="stat-tile" style="grid-column:1/-1"><div class="label">Not in the most recent import</div><div class="value" style="font-size:var(--text-base);font-weight:400">Shown below is its history from earlier reports.</div></div></div>`;
 
+    const segment = data.value_segment
+      ? `<div class="segment-policy"><strong>${escapeHtml(data.value_segment.tier_label)} · ${escapeHtml(data.value_segment.movement_label)}:</strong> ${escapeHtml(data.value_segment.policy)}</div>`
+      : '';
+
     body.innerHTML = `
       <div class="detail-eyebrow">${escapeHtml(brand)}</div>
       <div class="detail-title">${escapeHtml(sku)} ${c ? statusBadgeHtml(c.status) : ''}</div>
       ${kpis}
+      ${segment}
       <div class="detail-section-title">Stock &amp; sales over time</div>
       <div id="sku-detail-chart"></div>
       <div class="detail-section-title">By period</div>

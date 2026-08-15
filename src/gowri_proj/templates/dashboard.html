@@ -75,7 +75,8 @@
   .stat-tile-clickable { cursor: pointer; transition: background var(--transition-fast), outline-color var(--transition-fast); outline: 2px solid transparent; outline-offset: -2px; }
   .stat-tile-clickable:hover { background: var(--page); }
   .stat-tile-clickable.active { outline-color: var(--accent); background: var(--surface-2); }
-  .segment-policy { font-size: var(--text-sm); color: var(--text-secondary); background: var(--surface-2); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; margin: 14px 0; }
+  /* .segment-policy is defined once in base.html — shared with the SKU
+     detail modal, which can open from any page, not just this one. */
 </style>
 {% endblock %}
 

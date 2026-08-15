@@ -29,7 +29,7 @@ from .analysis import (
     sku_history,
     summarize_history,
 )
-from .dashboard import _sanitize, build_payload
+from .dashboard import SEGMENT_MOVEMENT_LABELS, SEGMENT_TIER_LABELS, _sanitize, _segment_policy, build_payload
 from .parser import parse_item_list, parse_stock_statement
 from .sync import fy_folder, sync_folder
 
@@ -38,6 +38,23 @@ ITEM_CATALOG_FILENAME = "item_catalog.xlsx"
 DEFAULT_DB_PATH = db.DEFAULT_DB_PATH
 DEFAULT_UPLOADS_DIR = "uploads"
 MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50MB — generous for a stock statement export
+
+
+def _value_segment_for(summary, sku: str) -> dict | None:
+    """The ABC-tier x movement segment for one SKU, or None if it isn't
+    segmented (out_of_stock/returned, or not currently stocked at all —
+    see analysis._compute_value_segments)."""
+    rows = summary.value_segment_skus[summary.value_segment_skus["sku"] == sku]
+    if rows.empty:
+        return None
+    row = rows.iloc[0]
+    return {
+        "tier": row["tier"],
+        "movement": row["movement"],
+        "tier_label": SEGMENT_TIER_LABELS[row["tier"]],
+        "movement_label": SEGMENT_MOVEMENT_LABELS[row["movement"]],
+        "policy": _segment_policy(row["tier"], row["movement"]),
+    }
 
 
 def _serialize_reports(reports_df) -> list[dict]:
@@ -224,7 +241,12 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
         # it's the freshest known label for this sku, and the query param
         # may be stale (see the comment on current_rows above).
         display_brand = current_rows.iloc[0]["brand"] if not current_rows.empty else brand
-        return jsonify(_sanitize({"brand": display_brand, "sku": sku, "current": current, "history": history}))
+        value_segment = _value_segment_for(summary, sku)
+        return jsonify(
+            _sanitize(
+                {"brand": display_brand, "sku": sku, "current": current, "value_segment": value_segment, "history": history}
+            )
+        )
 
     @app.get("/api/brand-detail")
     def api_brand_detail():
