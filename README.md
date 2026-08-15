@@ -19,6 +19,19 @@ If double-clicking a `.command` file does nothing on Mac (Gatekeeper can
 block it the first time), right-click it → Open instead. If a script fails
 partway, running it again picks up where it left off.
 
+## Getting updates
+
+- **Mac**: double-click `update.command`
+- **Windows**: double-click `update.bat`
+
+Pulls the latest version of the app and installs any new dependencies —
+your imported reports, uploads, and settings all live in files this never
+touches (`db/`, `uploads/`, `output/`), so they're untouched no matter what.
+Safe to run any time; it says "Already up to date" if there's nothing new.
+Close the app first if it's running. Requires the folder to have been set
+up to receive updates (ask whoever set this up on this device if
+`update.command`/`update.bat` says it isn't).
+
 ## Daily use
 
 - **Mac**: double-click `run.command`
