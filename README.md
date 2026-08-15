@@ -57,22 +57,44 @@ stop the app. Everything from here on is point-and-click:
   Stock tab also breaks its list down by **age** (90–179 / 180–364 / 365+
   days since anything last happened to that SKU) — a SKU dead 3 months and
   one dead 2 years call for very different actions.
+- **Value segments** (on the Dashboard) — every currently-stocked SKU sorted
+  into an ABC value tier crossed with how it's moving (Fast/Slow/Non-moving),
+  9 tiles in all. A high-value SKU that's stopped moving and a low-value one
+  that's stopped moving both show up as "dead stock" elsewhere, but they
+  deserve very different attention — this is what separates them. Click a
+  tile for a short recommendation and its SKU list; see "How the numbers are
+  calculated" below for exactly how tiers are assigned. A SKU's segment also
+  shows up in its own detail panel wherever you open one (search, an
+  action-list row, a brand's SKU list).
 - **Search box** (top of every page) — looks up any SKU across your entire
   current catalog, not just within one action-list tab. The dashboard's
   per-tab search boxes only cover out-of-stock/low-stock/dead-stock/
   overstock; this also finds "healthy" SKUs, which aren't listed anywhere
   else. Click a result to open its detail panel.
 - **Settings page** — `low_stock_days`, `overstock_days`, `dead_stock_days`,
-  and the sales-pace trailing window are editable here instead of being
-  fixed constants. Takes effect immediately, everywhere (dashboard, and the
-  CLI's defaults — see below) — no restart needed.
+  the sales-pace trailing window, and the two value-tier cutoff percentages
+  are editable here instead of being fixed constants. Takes effect
+  immediately, everywhere (dashboard, and the CLI's defaults — see below) —
+  no restart needed.
 - **Import health** (on the Reports page) — last refresh time, any gap
-  between when one imported report ends and the next begins, and a list of
-  files a rescan rejected (wrong period, duplicate, unreadable). This
-  catches *missing reporting periods*; it does not (yet) catch a SKU that
-  quietly disappears from one report to the next while the reporting period
-  itself stays fully covered — see "Current-state blind spot" below, which
-  is a different, currently-undetected problem.
+  between when one imported report ends and the next begins, a list of files
+  a rescan rejected (wrong period, duplicate, unreadable), and any SKU name
+  that's newly appeared or vanished since your last import with no obvious
+  match on the other side (a real new/discontinued item, not just "10G"
+  relisted as "10GM" — see below). This catches *missing reporting periods*
+  and *unexplained SKU churn*; it does not (yet) catch a SKU that quietly
+  disappears from one report to the next while the reporting period itself
+  stays fully covered — see "Current-state blind spot" below, which is a
+  different, currently-undetected problem.
+- **Item code list** (on the Reports page, collapsed — optional) — upload
+  your POS system's master item list (a stable code per item, independent of
+  whatever name it's currently sold under) and the app can tell an actual
+  rename apart from a genuinely new or discontinued SKU. Without it, "AMLOKIND
+  5MG TAB" becoming "AMLOKIND 5MG TAB (NON)" next month shows up as 1 new + 1
+  vanished SKU; re-upload a refreshed item list after your POS system renames
+  something and the app recognizes it as the same item (matched by code) the
+  next time you check. Not something you need to touch often — only surfaced
+  when Import health actually flags unexplained churn.
 
 The very first file can span a wider range (e.g. an initial Apr–Jul export)
 as a starting baseline — everything after that should be one month at a
@@ -102,9 +124,10 @@ for the sales-pace trend).
 
 ## How the numbers are calculated
 
-All four thresholds below are editable from the **Settings** page (and via
-matching CLI flags — see below); the numbers here are just the built-in
-defaults.
+All four day-based thresholds below (and the two value-tier percentages
+further down) are editable from the **Settings** page; the day-based ones
+also have matching CLI flags (see below). The numbers here are just the
+built-in defaults.
 
 - **Current stock** (closing stock, value) comes from the most recently
   imported report.
@@ -131,6 +154,16 @@ defaults.
 - **Other status buckets**: `out_of_stock` (zero on hand), `low_stock`
   (below `low_stock_days`, default 15, days of cover), `overstock` (above
   `overstock_days`, default 90, days of cover), `healthy` (everything else).
+- **Value segments** (also Settings-editable — `value_tier_a_pct`/
+  `value_tier_b_pct`, defaults 70/90): every currently-stocked SKU is sorted
+  by value, highest first, and given a tier based on the running cumulative
+  share of total value at that point — tier **A** covers however many SKUs
+  it takes to reach 70% of total value, **B** continues to 90%, **C** is
+  everything after that (the long tail). Crossed with a movement bucket
+  reused from the status classification above, not a separate metric —
+  `dead_stock` → **Non-moving**, `overstock` → **Slow**, `low_stock`/
+  `healthy` → **Fast**. `out_of_stock`/`returned` SKUs aren't segmented at
+  all (nothing on hand to tie up capital in right now).
 - **Data quality**: every imported row is checked for combinations that are
   logically impossible (positive stock with negative value, negative stock,
   negative sales) — not corrected, since there's no way to know the true
@@ -170,23 +203,34 @@ install.command          Mac one-time setup (installs uv + dependencies)
 install.bat              Windows one-time setup
 run.command             Mac double-click launcher
 run.bat                 Windows double-click launcher
+update.command           Mac double-click updater (git pull + re-sync dependencies)
+update.bat               Windows double-click updater
 main.py                 CLI entry point (refresh / import / list / remove / dashboard)
 src/gowri_proj/
   webapp.py             Flask routes — dashboard/reports/settings pages, all /api/* endpoints
   templates/
     base.html           shared nav, theme toggle, toasts, confirm modal, global search,
                          and the SKU/brand detail panel + line-chart code (used from any page)
-    dashboard.html      KPIs, stock health, dead-stock aging, charts, trend lines, action lists
-    reports.html        upload dropzone, reports table, remove, import-health card
-    settings.html       editable status thresholds
-  parser.py             parses one .xls export into a tidy DataFrame
-  db.py                 SQLite storage — reports / stock_entries / watched_files / settings
+    dashboard.html      KPIs, stock health, dead-stock aging, value segments, charts, trend
+                         lines, action lists
+    reports.html        upload dropzone, reports table, remove, import-health card,
+                         item code list upload (SKU-churn / rename detection)
+    settings.html       editable status thresholds + value-tier cutoffs
+  dashboard_template.html  standalone offline copy of the dashboard for the CLI's HTML export
+                         (no server, so it reimplements the same rendering by hand — see its
+                         own comment for what that means for keeping the two in sync)
+  parser.py             parses a stock statement .xls export, and separately the POS item
+                         list export (item code -> current name/brand mapping)
+  db.py                 SQLite storage — reports / stock_entries / watched_files / settings /
+                         item_catalog / item_name_changes (code-anchored rename log)
   sync.py               scans uploads/ and imports whatever is new
   analysis.py           combines all imported reports into the current summary + trends +
-                         dead-stock aging + import-gap detection + global search
+                         dead-stock aging + value segmentation + SKU-churn detection +
+                         import-gap detection + global search
   dashboard.py           builds the dashboard's JSON payload (shared by web app + CLI)
   excel_export.py       multi-sheet Excel export
-uploads/                drop each month's .xls/.xlsx export here (gitignored)
+uploads/                drop each month's .xls/.xlsx export here, plus the optional item
+                         list export (gitignored)
 db/inventory.db         SQLite database (gitignored)
 output/                 CLI-generated dashboard/Excel exports (gitignored)
 ```
