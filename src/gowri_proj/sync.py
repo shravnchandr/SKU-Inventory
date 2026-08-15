@@ -53,10 +53,6 @@ class SyncResult:
     filename_reused: list[tuple[str, str, str]] = field(default_factory=list)  # rel_path, old period, new period
     errors: list[tuple[str, str]] = field(default_factory=list)  # rel_path, error message
 
-    @property
-    def has_changes(self) -> bool:
-        return bool(self.imported)
-
 
 def sync_folder(conn: sqlite3.Connection, folder: str) -> SyncResult:
     result = SyncResult()

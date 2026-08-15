@@ -346,16 +346,12 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
         uploads_dir = Path(app.config["UPLOADS_DIR"])
         uploads_dir.mkdir(parents=True, exist_ok=True)
 
-        # Stage the upload under a dotfile name in uploads_dir itself (so the
-        # eventual move is a same-filesystem, atomic replace — true even
-        # into a subfolder below it, atomicity only needs source/dest on the
-        # same filesystem, not the same directory) and validate it there
-        # *before* it ever becomes a real file. That ordering matters: if we
-        # wrote straight to the real filename first, a rejected upload
-        # (conflicting period, duplicate, bad file) would still have
-        # overwritten whatever the existing report's provenance pointed at,
-        # on every single attempt — including retries after a rejection,
-        # which a "reject once" check can't catch.
+        # Stage the upload under a dotfile name in uploads_dir itself (same
+        # filesystem as the eventual destination, so the final move is an
+        # atomic replace) and validate it there *before* it ever becomes a
+        # real file — writing straight to the real filename first would let
+        # a rejected upload (conflicting period, duplicate, bad file)
+        # overwrite the existing report's provenance on every attempt.
         fd, tmp_name = tempfile.mkstemp(prefix=".upload-", suffix=Path(filename).suffix, dir=uploads_dir)
         tmp_path = Path(tmp_name)
         try:

@@ -122,11 +122,7 @@ def _compute_dead_stock(
     or the last time it *sold* — not a fixed trailing window shared by every
     SKU, and not "purchase" alone (a single sale right after a purchase two
     years ago shouldn't grant permanent immunity from ever being flagged
-    dead again; the clock has to reset on whatever happened most recently,
-    restock or sale). A SKU restocked last month that hasn't sold yet isn't
-    dead; one restocked 4 months ago that still hasn't moved is; one that
-    sold a handful of units right after being restocked a year ago but
-    nothing since is dead once enough time has passed since *that* sale.
+    dead again; the clock has to reset on whatever happened most recently).
 
     Keyed on ``sku`` alone, not ``(brand, sku)`` — the source export's brand
     label for a SKU can (and, checked against real data, does) change over
@@ -159,19 +155,13 @@ def _compute_dead_stock(
     result["last_purchase_end"] = last_purchase_end
     result["last_sale_end"] = last_sale_end
     result["last_activity_end"] = result[["last_purchase_end", "last_sale_end"]].max(axis=1)
-    # Nothing found within the lookback window — it's dead, at least
-    # `lookback_days` old, whether the true last activity was just outside
-    # the window or never happened at all; which one doesn't matter for
-    # either the is_dead check or which aging bucket it lands in.
-    #
-    # BUT lookback_cutoff can fall before the earliest report we've ever
-    # imported (e.g. a fresh install with 16 months of history and a
-    # 750-day lookback floor) — in that case "nothing in the window" really
-    # means "nothing in the SKU's entire recorded life," and the honest
-    # last-known-activity date is when we first started tracking it, not
-    # the fictional pre-history cutoff. Using lookback_cutoff there would
-    # fabricate an age the data can't support (e.g. bucketing a SKU as
-    # "2+ years dead" when it's only been tracked for 16 months).
+    # Nothing found within the lookback window — it's dead. Fall back to
+    # lookback_cutoff as the last-known-activity date, unless that date is
+    # earlier than our earliest imported report (e.g. a fresh install with
+    # 16 months of history and a 750-day lookback floor) — in that case use
+    # earliest_period_start instead, or we'd fabricate an age the data can't
+    # support (bucketing a SKU as "2+ years dead" when it's only been
+    # tracked for 16 months).
     fallback = max(lookback_cutoff, earliest_period_start)
     result["last_activity_end"] = result["last_activity_end"].fillna(fallback)
 
@@ -531,7 +521,7 @@ def _pair_renames_via_catalog(
     paired_vanished: set[str] = set()
     paired_new: set[str] = set()
     pairs = []
-    for v_name, v_row in vanished_rows.items():
+    for v_name in vanished_rows:
         n_name = alias_map.get(v_name)
         if n_name is None or n_name not in new_rows or n_name in paired_new:
             continue

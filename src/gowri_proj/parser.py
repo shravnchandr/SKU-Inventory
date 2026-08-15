@@ -117,7 +117,7 @@ IL_COL_PACKING = 2
 IL_COL_MRP = 3
 IL_COL_BY_RATE = 4
 IL_COL_TAX_PCT = 5
-IL_COL_SP_RATE = 6
+# Column 6 (Sp.Rate) is skipped — not read into product_name.
 IL_COL_HSN = 7
 IL_COL_LONG_NAME = 8
 
