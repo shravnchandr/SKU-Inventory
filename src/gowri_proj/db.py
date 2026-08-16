@@ -267,15 +267,21 @@ def find_superseded_reports(
 
     Split into two groups, because only one of them can be resolved
     automatically:
-    - superseded: the new upload's range reaches at least as far as
-      theirs — e.g. a progressively re-exported "first week" superseded by
-      "first two weeks" superseded by the full month, which is how this
-      app expects reports to normally accumulate mid-period. Safe to delete
-      and replace with the new, more complete report.
-    - blocking: overlaps only partially, without the new upload reaching as
-      far as an existing report already does — there's no way to tell
-      automatically which side is "correct" for the disputed range, so this
-      can't be resolved without a human deciding.
+    - superseded: the new upload's range *fully contains* theirs (starts no
+      later than theirs and ends no earlier) — e.g. a progressively
+      re-exported "first week" superseded by "first two weeks" superseded
+      by the full month, which is how this app expects reports to normally
+      accumulate mid-period. Safe to delete and replace with the new, more
+      complete report. Reaching only as far as their *end* isn't enough —
+      e.g. existing 2026-06-01..06-30 and a new 2026-06-15..07-15 upload
+      both end later than 06-30, but the new one starts after the old one
+      does, so days 1-14 would be silently lost if this only checked the
+      end date. Full containment is the only shape where nothing the old
+      report covered is missing from the new one.
+    - blocking: overlaps without the new upload fully containing an
+      existing report — there's no way to tell automatically which side is
+      "correct" for the disputed range, so this can't be resolved without a
+      human deciding.
     """
     rows = conn.execute(
         "SELECT id, period_start, period_end FROM reports "
@@ -285,9 +291,10 @@ def find_superseded_reports(
             meta.period_start.isoformat(), meta.period_end.isoformat(),
         ),
     ).fetchall()
+    new_start = meta.period_start.isoformat()
     new_end = meta.period_end.isoformat()
-    superseded = [r[0] for r in rows if new_end >= r[2]]
-    blocking = [tuple(r) for r in rows if new_end < r[2]]
+    superseded = [r[0] for r in rows if new_start <= r[1] and new_end >= r[2]]
+    blocking = [tuple(r) for r in rows if not (new_start <= r[1] and new_end >= r[2])]
     return superseded, blocking
 
 

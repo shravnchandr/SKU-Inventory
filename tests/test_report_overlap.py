@@ -79,6 +79,22 @@ def test_a_narrower_upload_that_does_not_reach_an_existing_reports_end_is_blocke
     assert reports.iloc[0]["source_filename"] == "june.xlsx"
 
 
+def test_an_upload_that_starts_later_than_an_existing_report_does_not_supersede_it(tmp_path):
+    # Existing 2026-06-01..06-30; new upload 2026-06-15..07-15 ends later
+    # but *starts* after the old report already did — reaching only as far
+    # as the old report's end isn't supersession, since days 1-14 would be
+    # silently lost if the old report were deleted. Must block instead.
+    with db.connect(str(tmp_path / "test.db")) as conn:
+        db.import_report(conn, _df("A"), _meta("2026-06-01", "2026-06-30"), "june.xlsx")
+
+        with pytest.raises(ValueError, match="partially overlaps"):
+            db.import_report(conn, _df("A"), _meta("2026-06-15", "2026-07-15"), "mid_june_to_mid_july.xlsx")
+
+        reports = db.list_reports(conn)
+    assert len(reports) == 1
+    assert reports.iloc[0]["source_filename"] == "june.xlsx"
+
+
 def test_non_overlapping_reports_import_normally(tmp_path):
     with db.connect(str(tmp_path / "test.db")) as conn:
         db.import_report(conn, _df("A"), _meta("2026-06-01", "2026-06-30"), "june.xlsx")

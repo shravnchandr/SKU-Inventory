@@ -332,9 +332,10 @@ async function loadImportHealth() {
       qualityEl.innerHTML = `
         <div class="health-row health-warn">
           <span class="icon">⚠</span>
-          ${quality.total} row${quality.total === 1 ? '' : 's'} with an impossible or unbalanced value
-          (e.g. opening + purchased − sold not matching the reported closing stock) — the source file, not
-          this app, has the wrong number; nothing here has been corrected or excluded from your totals.
+          ${quality.total} issue${quality.total === 1 ? '' : 's'} found — an impossible or unbalanced value
+          (e.g. opening + purchased − sold not matching the reported closing stock; one source row can have
+          more than one issue, so this counts issues, not rows) — the source file, not this app, has the
+          wrong number; nothing here has been corrected or excluded from your totals.
         </div>
         <table class="problem-files" style="width:100%; margin-top:8px">
           <thead><tr><th>Brand</th><th>SKU</th><th>Period</th><th>Issue</th></tr></thead>
