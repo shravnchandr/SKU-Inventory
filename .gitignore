@@ -22,3 +22,6 @@ uploads/
 
 # Ruff cache
 .ruff_cache
+
+# Cleanup pipeline scratch notes
+.cleanup/
