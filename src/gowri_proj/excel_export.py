@@ -1,4 +1,5 @@
 """Export each action list (and the overall summary) to a multi-sheet .xlsx workbook."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from .analysis import STATUS_ORDER, InventorySummary
+
 
 def _display_columns(trailing_days: int) -> dict[str, str]:
     """Column labels for the exported sheets — same trailing-window
@@ -92,7 +94,9 @@ def export_excel(summary: InventorySummary, out_path: str) -> Path:
         for sheet_name in ["Summary"] + [name for _, name in SHEETS]:
             ws = writer.sheets[sheet_name]
             for col_cells in ws.columns:
-                length = max((len(str(c.value)) for c in col_cells if c.value is not None), default=10)
+                length = max(
+                    (len(str(c.value)) for c in col_cells if c.value is not None), default=10
+                )
                 ws.column_dimensions[col_cells[0].column_letter].width = min(length + 2, 40)
 
     return path

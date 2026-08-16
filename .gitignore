@@ -19,3 +19,6 @@ uploads/
 
 # OS
 .DS_Store
+
+# Ruff cache
+.ruff_cache

@@ -16,6 +16,7 @@ consistency in both failure directions:
    same directory as its destination specifically so this practically never
    happens for real, but the code path still needs coverage.
 """
+
 from unittest.mock import patch
 
 import openpyxl
@@ -25,7 +26,9 @@ from src.gowri_proj import db
 from src.gowri_proj.webapp import create_app
 
 
-def _write_item_list(path, rows, company="JANHAVI MEDICALS", location="BANGALORE", as_of="09/08/2026"):
+def _write_item_list(
+    path, rows, company="JANHAVI MEDICALS", location="BANGALORE", as_of="09/08/2026"
+):
     """rows: list of either ("brand", name) or ("item", code, product, packing,
     mrp, by_rate, tax_pct, hsn, long_name) tuples.
     """
@@ -36,7 +39,9 @@ def _write_item_list(path, rows, company="JANHAVI MEDICALS", location="BANGALORE
     sheet2.append([company])
     sheet2.append([location])
     sheet2.append([f"Item List as on {as_of}"])
-    sheet2.append(["Code", "Product", "Packing", "M.R.P.", "By.Rate", "Tax%", "Sp.Rate", "HSN", "Long Name"])
+    sheet2.append(
+        ["Code", "Product", "Packing", "M.R.P.", "By.Rate", "Tax%", "Sp.Rate", "HSN", "Long Name"]
+    )
     for row in rows:
         if row[0] == "brand":
             sheet2.append([row[1]])
@@ -75,7 +80,17 @@ def test_failed_import_leaves_the_existing_catalog_file_and_db_untouched(client,
         good_path,
         [
             ("brand", "CIPLA"),
-            ("item", "C001", "ARKAMIN 0.1MG TAB", "10S", 20.0, 15.0, 12.0, "3004", "ARKAMIN 0.1MG TABLET"),
+            (
+                "item",
+                "C001",
+                "ARKAMIN 0.1MG TAB",
+                "10S",
+                20.0,
+                15.0,
+                12.0,
+                "3004",
+                "ARKAMIN 0.1MG TABLET",
+            ),
         ],
     )
     resp = _upload(client, good_path)
@@ -124,7 +139,17 @@ def test_a_failed_file_replace_rolls_back_the_already_committed_db_import(client
         good_path,
         [
             ("brand", "CIPLA"),
-            ("item", "C001", "ARKAMIN 0.1MG TAB", "10S", 20.0, 15.0, 12.0, "3004", "ARKAMIN 0.1MG TABLET"),
+            (
+                "item",
+                "C001",
+                "ARKAMIN 0.1MG TAB",
+                "10S",
+                20.0,
+                15.0,
+                12.0,
+                "3004",
+                "ARKAMIN 0.1MG TABLET",
+            ),
         ],
     )
     resp = _upload(client, good_path)
@@ -142,7 +167,17 @@ def test_a_failed_file_replace_rolls_back_the_already_committed_db_import(client
         new_path,
         [
             ("brand", "CIPLA"),
-            ("item", "C001", "ARKAMIN 0.1MG TAB RENAMED", "10S", 20.0, 15.0, 12.0, "3004", "ARKAMIN 0.1MG TABLET RENAMED"),
+            (
+                "item",
+                "C001",
+                "ARKAMIN 0.1MG TAB RENAMED",
+                "10S",
+                20.0,
+                15.0,
+                12.0,
+                "3004",
+                "ARKAMIN 0.1MG TABLET RENAMED",
+            ),
         ],
     )
     # The DB import (which happens first) succeeds normally; only the

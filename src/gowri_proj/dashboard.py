@@ -1,4 +1,5 @@
 """Render the inventory analysis as a single self-contained HTML dashboard."""
+
 from __future__ import annotations
 
 import json
@@ -7,7 +8,18 @@ from pathlib import Path
 
 import pandas as pd
 
-from .analysis import STATUS_ORDER, InventorySummary, format_days_of_cover
+from .analysis import (
+    DEAD_STOCK_DAYS,
+    LOW_STOCK_DAYS,
+    OVERSTOCK_DAYS,
+    STATUS_ORDER,
+    TRAILING_DAYS_TARGET,
+    VALUE_TIER_A_PCT,
+    VALUE_TIER_B_PCT,
+    InventorySummary,
+    ThresholdValues,
+    format_days_of_cover,
+)
 
 
 def _sanitize(obj):
@@ -23,6 +35,7 @@ def _sanitize(obj):
     if isinstance(obj, list):
         return [_sanitize(v) for v in obj]
     return obj
+
 
 STATUS_LABELS = {
     "out_of_stock": "Out of stock",
@@ -40,7 +53,9 @@ STATUS_COLOR_VAR = {
     "overstock": "--series-1",
     "healthy": "--status-good",
 }
-def _status_blurbs(thresholds: dict) -> dict[str, str]:
+
+
+def _status_blurbs(thresholds: ThresholdValues) -> dict[str, str]:
     """Threshold-dependent copy — has to be built from whatever's actually
     configured, not hardcoded text, since low/overstock/dead-stock days are
     user-editable from the Settings page."""
@@ -73,14 +88,23 @@ SEGMENT_MOVEMENT_LABELS = {
 # ordering system): just a short recommendation shown next to each segment.
 SEGMENT_POLICY = {
     ("A", "fast"): "Top priority — keep well stocked, review often.",
-    ("A", "slow"): "High value moving slowly — review before reordering; consider a smaller order quantity.",
-    ("A", "non_moving"): "High value tied up, not moving — review for return/markdown before it ages further.",
+    (
+        "A",
+        "slow",
+    ): "High value moving slowly — review before reordering; consider a smaller order quantity.",
+    (
+        "A",
+        "non_moving",
+    ): "High value tied up, not moving — review for return/markdown before it ages further.",
     ("B", "fast"): "Standard reorder cadence, no special attention needed.",
     ("B", "slow"): "Reduce reorder quantity; keep an eye on it.",
     ("B", "non_moving"): "Worth a look — candidate for markdown or return.",
     ("C", "fast"): "Low value, low risk — simplified reordering.",
     ("C", "slow"): "Low-value long tail — reorder only on request, minimal review.",
-    ("C", "non_moving"): "Low-value dead stock — low priority, but a candidate to drop from the catalog.",
+    (
+        "C",
+        "non_moving",
+    ): "Low-value dead stock — low priority, but a candidate to drop from the catalog.",
 }
 
 
@@ -121,20 +145,20 @@ def _round_records(df: pd.DataFrame) -> list[dict]:
     return d.to_dict(orient="records")
 
 
-DEFAULT_THRESHOLDS = {
-    "low_stock_days": 15,
-    "overstock_days": 90,
-    "trailing_days_target": 90,
-    "dead_stock_days": 90,
-    "value_tier_a_pct": 70,
-    "value_tier_b_pct": 90,
+DEFAULT_THRESHOLDS: ThresholdValues = {
+    "low_stock_days": LOW_STOCK_DAYS,
+    "overstock_days": OVERSTOCK_DAYS,
+    "trailing_days_target": TRAILING_DAYS_TARGET,
+    "dead_stock_days": DEAD_STOCK_DAYS,
+    "value_tier_a_pct": VALUE_TIER_A_PCT,
+    "value_tier_b_pct": VALUE_TIER_B_PCT,
 }
 
 
 def build_payload(
     summary: InventorySummary,
     quality_issues: list[dict] | None = None,
-    thresholds: dict | None = None,
+    thresholds: ThresholdValues | None = None,
     include_tables: bool = True,
 ) -> dict:
     """Build the full page payload.
@@ -256,7 +280,7 @@ def build_payload(
 def render_html(
     summary: InventorySummary,
     quality_issues: list[dict] | None = None,
-    thresholds: dict | None = None,
+    thresholds: ThresholdValues | None = None,
 ) -> str:
     payload = _sanitize(build_payload(summary, quality_issues, thresholds))
     # This file is built by plain string substitution, not Jinja, so there's
@@ -265,10 +289,7 @@ def render_html(
     # Flask's tojson applies). Brand/SKU/filename text in the payload comes
     # straight from an uploaded spreadsheet, so this isn't just theoretical.
     data_json = (
-        json.dumps(payload)
-        .replace("<", "\\u003c")
-        .replace(">", "\\u003e")
-        .replace("&", "\\u0026")
+        json.dumps(payload).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     )
     company = payload["meta"]["company"] or "Inventory"
     template = Path(__file__).with_name("dashboard_template.html").read_text()
@@ -281,7 +302,7 @@ def write_dashboard(
     summary: InventorySummary,
     out_path: str,
     quality_issues: list[dict] | None = None,
-    thresholds: dict | None = None,
+    thresholds: ThresholdValues | None = None,
 ) -> Path:
     html = render_html(summary, quality_issues, thresholds)
     path = Path(out_path)

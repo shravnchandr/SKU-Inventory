@@ -6,15 +6,25 @@ stock-flow balance check (opening + purchase + purchase_free + other_receipt
 tolerance for real-world rounding) alongside the pre-existing impossible-
 value checks.
 """
+
 import pandas as pd
 
 from src.gowri_proj.analysis import find_data_quality_issues
 
 BASE_ROW = {
-    "brand": "BRAND", "sku": "SKU",
-    "period_start": pd.Timestamp("2026-06-01"), "period_end": pd.Timestamp("2026-06-30"),
-    "opening_stock": 10.0, "purchase": 5.0, "purchase_free": 0.0, "other_receipt": 0.0,
-    "sales": 3.0, "sales_free": 0.0, "other_issue": 0.0, "closing_stock": 12.0, "value": 100.0,
+    "brand": "BRAND",
+    "sku": "SKU",
+    "period_start": pd.Timestamp("2026-06-01"),
+    "period_end": pd.Timestamp("2026-06-30"),
+    "opening_stock": 10.0,
+    "purchase": 5.0,
+    "purchase_free": 0.0,
+    "other_receipt": 0.0,
+    "sales": 3.0,
+    "sales_free": 0.0,
+    "other_issue": 0.0,
+    "closing_stock": 12.0,
+    "value": 100.0,
 }
 
 
@@ -45,13 +55,23 @@ def test_a_real_balance_discrepancy_is_flagged():
 def test_free_and_other_receipt_issue_columns_count_toward_the_balance():
     # 10 + 5 (paid) + 2 (free) + 1 (other receipt) - 3 (paid) - 1 (free) - 1 (other issue) = 13
     entries = _entries(
-        [{"purchase_free": 2.0, "other_receipt": 1.0, "sales_free": 1.0, "other_issue": 1.0, "closing_stock": 13.0}]
+        [
+            {
+                "purchase_free": 2.0,
+                "other_receipt": 1.0,
+                "sales_free": 1.0,
+                "other_issue": 1.0,
+                "closing_stock": 13.0,
+            }
+        ]
     )
     assert find_data_quality_issues(entries) == []
 
 
 def test_negative_closing_stock_is_still_flagged():
-    entries = _entries([{"closing_stock": -1.0, "opening_stock": 0.0, "purchase": 0.0, "sales": 0.0}])
+    entries = _entries(
+        [{"closing_stock": -1.0, "opening_stock": 0.0, "purchase": 0.0, "sales": 0.0}]
+    )
     issues = find_data_quality_issues(entries)
     assert any("Negative closing stock" in i["issue"] for i in issues)
 

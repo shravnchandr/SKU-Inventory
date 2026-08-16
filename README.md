@@ -47,16 +47,20 @@ stop the app. Everything from here on is point-and-click:
   imported report has a **Remove** button (with a confirmation prompt) for
   fixing a wrong upload.
 - **Dashboard page** — stock health (out-of-stock, low-stock, dead-stock,
-  overstock), top brands/SKUs by value, month-over-month trend charts (once
-  2+ months are imported), and searchable/sortable action lists with an
-  **Export CSV** button on each. Click any brand or SKU — in the top-value
-  charts, the trend legend, or an action-list row — to open its own detail
-  panel: full period-by-period history and a mini trend chart; a brand's
-  panel lists its SKUs, each clickable in turn. An empty action list says so
-  plainly ("Nothing is out of stock") rather than looking broken. The Dead
-  Stock tab also breaks its list down by **age** (90–179 / 180–364 / 365+
-  days since anything last happened to that SKU) — a SKU dead 3 months and
-  one dead 2 years call for very different actions.
+  overstock) and searchable/sortable action lists with an **Export CSV**
+  button on each. Click any SKU — in an action-list row or a brand's detail
+  panel — to open its own detail panel: full period-by-period history and a
+  mini trend chart. An empty action list says so plainly ("Nothing is out of
+  stock") rather than looking broken. The Dead Stock tab also breaks its
+  list down by **age** (90–179 / 180–364 / 365+ days since anything last
+  happened to that SKU) — a SKU dead 3 months and one dead 2 years call for
+  very different actions. Kept deliberately short — a "what needs action
+  today" glance.
+- **Trends page** — the deeper-dive companion to the Dashboard: a
+  leaderboard (top SKUs by value, top SKUs by sales, top brands by value,
+  switchable) and month-over-month trend charts (once 2+ months are
+  imported). Click any brand or SKU here — in the leaderboard or the trend
+  legend — to open its detail panel, same as on the Dashboard.
 - **Value segments** (on the Dashboard) — every currently-stocked SKU sorted
   into an ABC value tier crossed with how it's moving (Fast/Slow/Non-moving),
   9 tiles in all. A high-value SKU that's stopped moving and a low-value one
@@ -218,8 +222,8 @@ src/gowri_proj/
   templates/
     base.html           shared nav, theme toggle, toasts, confirm modal, global search,
                          and the SKU/brand detail panel + line-chart code (used from any page)
-    dashboard.html      KPIs, stock health, dead-stock aging, value segments, charts, trend
-                         lines, action lists
+    dashboard.html      KPIs, stock health, dead-stock aging, value segments, action lists
+    trends.html         leaderboard (top SKUs/brands) and month-over-month trend charts
     reports.html        upload dropzone, reports table, remove, import-health card,
                          item code list upload (SKU-churn / rename detection)
     settings.html       editable status thresholds + value-tier cutoffs

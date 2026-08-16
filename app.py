@@ -4,6 +4,7 @@ Double-click run.command (Mac) or run.bat (Windows) instead of running this
 directly — they set the working directory correctly first. If you do run it
 yourself: `uv run app.py`.
 """
+
 from __future__ import annotations
 
 import socket

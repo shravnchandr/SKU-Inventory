@@ -6,17 +6,21 @@ one per month, going forward — so the app can compute a current snapshot
 (latest report) and trailing sales trends (recent reports) without re-parsing
 old .xls files.
 """
+
 from __future__ import annotations
 
 import sqlite3
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
+from typing import TypedDict
 
 import pandas as pd
 
 from . import analysis
+from .analysis import Settings
 from .parser import ReportMeta
 
 DEFAULT_DB_PATH = "db/inventory.db"
@@ -151,12 +155,21 @@ def _migrate(conn: sqlite3.Connection) -> None:
     # function on every connect() and fail outright on any database that
     # already had duplicates from before that fix existed — hence the
     # dedupe pass immediately above, and creating the index here instead.
-    conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_report_sku ON stock_entries(report_id, sku)")
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_entries_report_sku ON stock_entries(report_id, sku)"
+    )
 
 
 _STOCK_ENTRY_NUMERIC_COLS = [
-    "opening_stock", "purchase", "purchase_free", "other_receipt",
-    "sales", "sales_free", "other_issue", "closing_stock", "value",
+    "opening_stock",
+    "purchase",
+    "purchase_free",
+    "other_receipt",
+    "sales",
+    "sales_free",
+    "other_issue",
+    "closing_stock",
+    "value",
 ]
 
 
@@ -182,7 +195,7 @@ def _dedupe_stock_entries(conn: sqlite3.Connection) -> None:
 
 
 @contextmanager
-def connect(db_path: str = DEFAULT_DB_PATH):
+def connect(db_path: str = DEFAULT_DB_PATH) -> Iterator[sqlite3.Connection]:
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(path)
@@ -242,7 +255,10 @@ def find_reused_filename_conflict(
     old_report = get_report(conn, known["report_id"])
     if old_report is None:
         return None
-    if old_report["period_start"] != meta.period_start.isoformat() or old_report["period_end"] != meta.period_end.isoformat():
+    if (
+        old_report["period_start"] != meta.period_start.isoformat()
+        or old_report["period_end"] != meta.period_end.isoformat()
+    ):
         return old_report
     return None
 
@@ -287,8 +303,10 @@ def find_superseded_reports(
         "SELECT id, period_start, period_end FROM reports "
         "WHERE period_start <= ? AND period_end >= ? AND NOT (period_start = ? AND period_end = ?)",
         (
-            meta.period_end.isoformat(), meta.period_start.isoformat(),
-            meta.period_start.isoformat(), meta.period_end.isoformat(),
+            meta.period_end.isoformat(),
+            meta.period_start.isoformat(),
+            meta.period_start.isoformat(),
+            meta.period_end.isoformat(),
         ),
     ).fetchall()
     new_start = meta.period_start.isoformat()
@@ -360,12 +378,24 @@ def import_report(
     rows = df.copy()
     rows.insert(0, "report_id", report_id)
     cols = [
-        "report_id", "brand", "sku", "opening_stock", "purchase", "purchase_free",
-        "other_receipt", "sales", "sales_free", "other_issue", "closing_stock", "value",
+        "report_id",
+        "brand",
+        "sku",
+        "opening_stock",
+        "purchase",
+        "purchase_free",
+        "other_receipt",
+        "sales",
+        "sales_free",
+        "other_issue",
+        "closing_stock",
+        "value",
     ]
     rows[cols].to_sql("stock_entries", conn, if_exists="append", index=False)
 
-    return ImportResult(report_id, meta.period_start, meta.period_end, len(df), replaced, superseded_ids)
+    return ImportResult(
+        report_id, meta.period_start, meta.period_end, len(df), replaced, superseded_ids
+    )
 
 
 def list_reports(conn: sqlite3.Connection) -> pd.DataFrame:
@@ -403,9 +433,7 @@ def has_data(conn: sqlite3.Connection) -> bool:
 
 def get_watched_file(conn: sqlite3.Connection, filename: str) -> sqlite3.Row | None:
     conn.row_factory = sqlite3.Row
-    row = conn.execute(
-        "SELECT * FROM watched_files WHERE filename = ?", (filename,)
-    ).fetchone()
+    row = conn.execute("SELECT * FROM watched_files WHERE filename = ?", (filename,)).fetchone()
     conn.row_factory = None
     return row
 
@@ -453,7 +481,7 @@ DEFAULT_SETTINGS = {
 }
 
 
-def get_settings(conn: sqlite3.Connection) -> dict:
+def get_settings(conn: sqlite3.Connection) -> Settings:
     """Persisted status thresholds, or the built-in defaults if never saved."""
     row = conn.execute(
         "SELECT low_stock_days, overstock_days, trailing_days_target, dead_stock_days, "
@@ -463,8 +491,14 @@ def get_settings(conn: sqlite3.Connection) -> dict:
     if row is None:
         return {**DEFAULT_SETTINGS, "version": 0, "updated_at": None}
     keys = [
-        "low_stock_days", "overstock_days", "trailing_days_target", "dead_stock_days",
-        "value_tier_a_pct", "value_tier_b_pct", "version", "updated_at",
+        "low_stock_days",
+        "overstock_days",
+        "trailing_days_target",
+        "dead_stock_days",
+        "value_tier_a_pct",
+        "value_tier_b_pct",
+        "version",
+        "updated_at",
     ]
     return dict(zip(keys, row))
 
@@ -477,7 +511,7 @@ def upsert_settings(
     dead_stock_days: int,
     value_tier_a_pct: int,
     value_tier_b_pct: int,
-) -> dict:
+) -> Settings:
     conn.execute(
         "INSERT INTO settings (id, low_stock_days, overstock_days, trailing_days_target, dead_stock_days, "
         "value_tier_a_pct, value_tier_b_pct, version, updated_at) "
@@ -487,7 +521,14 @@ def upsert_settings(
         "trailing_days_target=excluded.trailing_days_target, dead_stock_days=excluded.dead_stock_days, "
         "value_tier_a_pct=excluded.value_tier_a_pct, value_tier_b_pct=excluded.value_tier_b_pct, "
         "version=settings.version + 1, updated_at=excluded.updated_at",
-        (low_stock_days, overstock_days, trailing_days_target, dead_stock_days, value_tier_a_pct, value_tier_b_pct),
+        (
+            low_stock_days,
+            overstock_days,
+            trailing_days_target,
+            dead_stock_days,
+            value_tier_a_pct,
+            value_tier_b_pct,
+        ),
     )
     return get_settings(conn)
 
@@ -505,7 +546,9 @@ def import_item_catalog(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
     gone the moment this DELETE runs, with nothing left to pair it against.
     """
     previous = pd.read_sql("SELECT code, product_name, long_name FROM item_catalog", conn)
-    prev_names = {row.code: (row.product_name, row.long_name) for row in previous.itertuples(index=False)}
+    prev_names = {
+        row.code: (row.product_name, row.long_name) for row in previous.itertuples(index=False)
+    }
 
     count = _replace_item_catalog_table(conn, df)
 
@@ -528,7 +571,15 @@ def import_item_catalog(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
 
 
 ITEM_CATALOG_COLUMNS = [
-    "code", "brand", "product_name", "packing", "mrp", "by_rate", "tax_pct", "hsn", "long_name",
+    "code",
+    "brand",
+    "product_name",
+    "packing",
+    "mrp",
+    "by_rate",
+    "tax_pct",
+    "hsn",
+    "long_name",
 ]
 
 
@@ -557,7 +608,9 @@ def get_item_name_changes_watermark(conn: sqlite3.Connection) -> int:
     return row[0]
 
 
-def rollback_item_catalog(conn: sqlite3.Connection, catalog_snapshot: pd.DataFrame, item_name_changes_watermark: int) -> int:
+def rollback_item_catalog(
+    conn: sqlite3.Connection, catalog_snapshot: pd.DataFrame, item_name_changes_watermark: int
+) -> int:
     """Undo an import_item_catalog call that committed to the DB but whose
     file write afterward failed: restores the catalog table to its
     pre-import snapshot, and deletes any item_name_changes rows that import
@@ -586,7 +639,12 @@ def get_name_change_map(conn: sqlite3.Connection) -> dict[str, str]:
     return mapping
 
 
-def get_item_catalog_meta(conn: sqlite3.Connection) -> dict | None:
+class CatalogMeta(TypedDict):
+    imported_at: str
+    item_count: int
+
+
+def get_item_catalog_meta(conn: sqlite3.Connection) -> CatalogMeta | None:
     """When the catalog was last imported and how many items it has, or None
     if nothing has been imported yet.
     """
@@ -602,7 +660,6 @@ def list_item_catalog_names(conn: sqlite3.Connection) -> set[str]:
     round-trip the whole table for this check.
     """
     rows = conn.execute(
-        "SELECT product_name FROM item_catalog "
-        "UNION SELECT long_name FROM item_catalog"
+        "SELECT product_name FROM item_catalog UNION SELECT long_name FROM item_catalog"
     ).fetchall()
     return {r[0] for r in rows if r[0]}

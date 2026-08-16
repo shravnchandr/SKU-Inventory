@@ -15,9 +15,11 @@ Every import is one period (ideally one calendar month, going forward). The
 dashboard always reflects the full history in the database: current stock
 from the latest import, sales trends across all imports.
 """
+
 from __future__ import annotations
 
 import argparse
+import sqlite3
 import webbrowser
 from pathlib import Path
 
@@ -26,6 +28,7 @@ from src.gowri_proj.analysis import (
     STATUS_ORDER,
     THRESHOLD_DAYS_MAX,
     THRESHOLD_DAYS_MIN,
+    Settings,
     find_data_quality_issues,
     find_import_gaps,
     summarize_history,
@@ -33,9 +36,7 @@ from src.gowri_proj.analysis import (
 from src.gowri_proj.dashboard import write_dashboard
 from src.gowri_proj.excel_export import export_excel
 from src.gowri_proj.parser import parse_stock_statement
-from src.gowri_proj.sync import SyncResult, sync_folder
-
-DEFAULT_UPLOADS_DIR = "uploads"
+from src.gowri_proj.sync import DEFAULT_UPLOADS_DIR, SyncResult, sync_folder
 
 
 def cmd_import(args: argparse.Namespace) -> None:
@@ -43,13 +44,20 @@ def cmd_import(args: argparse.Namespace) -> None:
     df, meta = parse_stock_statement(args.xls_path)
     with db.connect(args.db) as conn:
         try:
-            result = db.import_report(conn, df, meta, Path(args.xls_path).name, replace=args.replace)
+            result = db.import_report(
+                conn, df, meta, Path(args.xls_path).name, replace=args.replace
+            )
         except ValueError as e:
+            # A business-rule rejection (e.g. a partial-overlap conflict — see
+            # find_superseded_reports), not a bug: report it and exit cleanly
+            # rather than letting it propagate as an unhandled traceback.
             print(f"Not imported: {e}")
             return
     verb = "Replaced" if result.replaced else "Imported"
     if result.superseded_report_ids:
-        print(f"(also replaced {len(result.superseded_report_ids)} earlier report(s) it fully overlapped)")
+        print(
+            f"(also replaced {len(result.superseded_report_ids)} earlier report(s) it fully overlapped)"
+        )
     print(
         f"{verb} report for {result.period_start} to {result.period_end}: "
         f"{result.sku_count:,} SKUs (report id {result.report_id})"
@@ -83,7 +91,9 @@ def cmd_remove(args: argparse.Namespace) -> None:
     with db.connect(args.db) as conn:
         report = db.get_report(conn, args.report_id)
         if report is None:
-            print(f"No report with id {args.report_id}. Run `uv run main.py list` to see valid ids.")
+            print(
+                f"No report with id {args.report_id}. Run `uv run main.py list` to see valid ids."
+            )
             return
         print(
             f"Removing report [{report['id']}] {report['period_start']} to {report['period_end']} "
@@ -115,7 +125,13 @@ def _report_sync(result: SyncResult) -> None:
         print(f"  ✗ skipped {filename}: {error}")
     if result.unchanged:
         print(f"  = {len(result.unchanged)} file(s) unchanged since last refresh")
-    if not (result.imported or result.duplicate_period or result.filename_reused or result.errors or result.unchanged):
+    if not (
+        result.imported
+        or result.duplicate_period
+        or result.filename_reused
+        or result.errors
+        or result.unchanged
+    ):
         print("  (no files found)")
 
 
@@ -125,7 +141,9 @@ def cmd_refresh(args: argparse.Namespace) -> None:
         result = sync_folder(conn, args.folder)
         _report_sync(result)
         if not db.has_data(conn):
-            print(f"\nNo data in the database yet — add .xls/.xlsx exports to {args.folder}/ and refresh again.")
+            print(
+                f"\nNo data in the database yet — add .xls/.xlsx exports to {args.folder}/ and refresh again."
+            )
             return
     print()
     _build_dashboard(args)
@@ -153,7 +171,7 @@ def _bounded_days(value: str) -> int:
     return n
 
 
-def _resolve_thresholds(conn, args: argparse.Namespace) -> dict:
+def _resolve_thresholds(conn: sqlite3.Connection, args: argparse.Namespace) -> Settings:
     """Persisted Settings values, with any explicitly-passed CLI flag as a
     one-off override for this run only (not written back to the DB) — so the
     CLI and the web app's Settings page share one source of truth by default.
@@ -229,7 +247,9 @@ def _build_dashboard(args: argparse.Namespace) -> None:
 
 
 def _add_dashboard_args(p: argparse.ArgumentParser) -> None:
-    p.add_argument("-o", "--out", default="output/inventory_dashboard.html", help="Output HTML path")
+    p.add_argument(
+        "-o", "--out", default="output/inventory_dashboard.html", help="Output HTML path"
+    )
     p.add_argument("--open", action="store_true", help="Open the dashboard in a browser when done")
     p.add_argument(
         "--excel",
@@ -271,21 +291,30 @@ def _add_dashboard_args(p: argparse.ArgumentParser) -> None:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="Track pharmacy inventory across monthly stock statement exports.")
+    ap = argparse.ArgumentParser(
+        description="Track pharmacy inventory across monthly stock statement exports."
+    )
     ap.add_argument("--db", default=db.DEFAULT_DB_PATH, help="SQLite database path")
     sub = ap.add_subparsers(dest="command", required=True)
 
     p_refresh = sub.add_parser(
-        "refresh", help="Scan the uploads folder for new/changed files, import them, and rebuild the dashboard"
+        "refresh",
+        help="Scan the uploads folder for new/changed files, import them, and rebuild the dashboard",
     )
     p_refresh.add_argument(
-        "--folder", default=DEFAULT_UPLOADS_DIR, help=f"Folder to scan (default: {DEFAULT_UPLOADS_DIR})"
+        "--folder",
+        default=DEFAULT_UPLOADS_DIR,
+        help=f"Folder to scan (default: {DEFAULT_UPLOADS_DIR})",
     )
     _add_dashboard_args(p_refresh)
     p_refresh.set_defaults(func=cmd_refresh)
 
-    p_import = sub.add_parser("import", help="Load one specific stock statement .xls into the database")
-    p_import.add_argument("xls_path", help="Path to the .xls export for one period (ideally one month)")
+    p_import = sub.add_parser(
+        "import", help="Load one specific stock statement .xls into the database"
+    )
+    p_import.add_argument(
+        "xls_path", help="Path to the .xls export for one period (ideally one month)"
+    )
     p_import.add_argument(
         "--replace", action="store_true", help="Overwrite an existing import for the same period"
     )
@@ -295,7 +324,8 @@ def main() -> None:
     p_list.set_defaults(func=cmd_list)
 
     p_remove = sub.add_parser(
-        "remove", help="Delete an imported report (wrong file, duplicate month, etc.) — see `list` for ids"
+        "remove",
+        help="Delete an imported report (wrong file, duplicate month, etc.) — see `list` for ids",
     )
     p_remove.add_argument("report_id", type=int, help="Report id from `uv run main.py list`")
     p_remove.set_defaults(func=cmd_remove)

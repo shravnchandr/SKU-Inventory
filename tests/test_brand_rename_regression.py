@@ -11,6 +11,7 @@ Before the fix, this exact shape understated trailing sales by dropping
 the pre-rename months, pushed days_of_cover up incorrectly, and truncated
 sku_history to only the post-rename periods.
 """
+
 import pandas as pd
 
 from src.gowri_proj.analysis import sku_history, summarize_history
@@ -25,7 +26,18 @@ STABLE_SKU = "PARACETAMOL 500MG"
 STABLE_BRAND = "GENERIC PHARMA"
 
 
-def _row(report_id, period_start, period_end, brand, sku, *, sales, purchase=0.0, closing_stock=100.0, value=1000.0):
+def _row(
+    report_id,
+    period_start,
+    period_end,
+    brand,
+    sku,
+    *,
+    sales,
+    purchase=0.0,
+    closing_stock=100.0,
+    value=1000.0,
+):
     return {
         "report_id": report_id,
         "period_start": pd.Timestamp(period_start),

@@ -5,6 +5,7 @@ by value on hand. _compute_value_segments/_value_segment_summary: cross
 that with movement (reusing the existing status classification), producing
 the count/value aggregate shown as tiles on the Dashboard.
 """
+
 import pandas as pd
 import pytest
 
@@ -29,11 +30,13 @@ def test_tier_boundaries_split_a_b_c():
     # 700/200/100 out of 1000 total: A ends where cumulative-before first
     # reaches 70% (just SKU 1), B continues to 90% (SKU 2 lands there since
     # cumulative-before it is exactly 70%, not yet past), C is the rest.
-    current = _current([
-        {"sku": "S1", "value": 700},
-        {"sku": "S2", "value": 200},
-        {"sku": "S3", "value": 100},
-    ])
+    current = _current(
+        [
+            {"sku": "S1", "value": 700},
+            {"sku": "S2", "value": 200},
+            {"sku": "S3", "value": 100},
+        ]
+    )
     tiers = _compute_value_tiers(current, a_pct=70, b_pct=90)
     assert tiers.to_dict() == {"S1": "A", "S2": "B", "S3": "C"}
 
@@ -44,17 +47,21 @@ def test_a_single_dominant_sku_lands_in_tier_a_not_c():
     # nothing else outranks it), not by the fact that including it pushes
     # cumulative past the cutoff. Getting this backwards would put the
     # single highest-value SKU in the long tail, which defeats the point.
-    current = _current([
-        {"sku": "DOMINANT", "value": 10000},
-        {"sku": "TINY", "value": 50},
-    ])
+    current = _current(
+        [
+            {"sku": "DOMINANT", "value": 10000},
+            {"sku": "TINY", "value": 50},
+        ]
+    )
     tiers = _compute_value_tiers(current, a_pct=70, b_pct=90)
     assert tiers["DOMINANT"] == "A"
     assert tiers["TINY"] == "C"
 
 
 def test_custom_cutoffs_are_respected():
-    current = _current([{"sku": "S1", "value": 10}, {"sku": "S2", "value": 10}, {"sku": "S3", "value": 10}])
+    current = _current(
+        [{"sku": "S1", "value": 10}, {"sku": "S2", "value": 10}, {"sku": "S3", "value": 10}]
+    )
     tiers = _compute_value_tiers(current, a_pct=40, b_pct=70)
     # Cumulative-before: S1=0% (<40 -> A), S2=33.3% (<40 -> A), S3=66.7% (<70 -> B)
     assert tiers.to_dict() == {"S1": "A", "S2": "A", "S3": "B"}
@@ -69,7 +76,12 @@ def test_all_zero_value_does_not_divide_by_zero():
 def test_out_of_stock_skus_are_excluded_from_tiering():
     # closing_stock <= 0 has nothing to tie up capital in right now — no
     # value tier to review.
-    current = _current([{"sku": "STOCKED", "value": 100, "closing_stock": 5}, {"sku": "GONE", "value": 999, "closing_stock": 0}])
+    current = _current(
+        [
+            {"sku": "STOCKED", "value": 100, "closing_stock": 5},
+            {"sku": "GONE", "value": 999, "closing_stock": 0},
+        ]
+    )
     tiers = _compute_value_tiers(current, a_pct=70, b_pct=90)
     assert list(tiers.index) == ["STOCKED"]
 
@@ -95,7 +107,12 @@ def _merged(rows: list[dict]) -> pd.DataFrame:
 
 @pytest.mark.parametrize(
     "status,expected_movement",
-    [("dead_stock", "non_moving"), ("overstock", "slow"), ("low_stock", "fast"), ("healthy", "fast")],
+    [
+        ("dead_stock", "non_moving"),
+        ("overstock", "slow"),
+        ("low_stock", "fast"),
+        ("healthy", "fast"),
+    ],
 )
 def test_movement_mapping(status, expected_movement):
     merged = _merged([{"sku": "S1", "brand": "B", "value": 100, "status": status}])
@@ -119,10 +136,21 @@ def test_compute_value_segments_handles_nothing_stocked_without_crashing():
     # Everything out of stock/returned — no SKU left to build a "tier-
     # movement" segment string out of. Must return an empty frame with the
     # right columns, not blow up on an empty-array string concatenation.
-    merged = _merged([{"sku": "GONE", "brand": "B", "value": 999, "status": "out_of_stock", "closing_stock": 0}])
+    merged = _merged(
+        [{"sku": "GONE", "brand": "B", "value": 999, "status": "out_of_stock", "closing_stock": 0}]
+    )
     segments = _compute_value_segments(merged, a_pct=70, b_pct=90)
     assert segments.empty
-    assert list(segments.columns) == ["brand", "sku", "value", "days_of_cover", "status", "tier", "movement", "segment"]
+    assert list(segments.columns) == [
+        "brand",
+        "sku",
+        "value",
+        "days_of_cover",
+        "status",
+        "tier",
+        "movement",
+        "segment",
+    ]
 
 
 def test_value_segment_summary_always_returns_all_nine_in_order():
@@ -137,7 +165,18 @@ def test_value_segment_summary_always_returns_all_nine_in_order():
     assert empty_segment == {"tier": "C", "movement": "fast", "count": 0, "value": 0.0}
 
 
-def _row(report_id, period_start, period_end, brand, sku, *, sales=0.0, purchase=0.0, closing_stock=1.0, value=100.0):
+def _row(
+    report_id,
+    period_start,
+    period_end,
+    brand,
+    sku,
+    *,
+    sales=0.0,
+    purchase=0.0,
+    closing_stock=1.0,
+    value=100.0,
+):
     return {
         "report_id": report_id,
         "period_start": pd.Timestamp(period_start),
@@ -163,9 +202,26 @@ def test_end_to_end_through_summarize_history_places_high_value_dead_sku_in_a_no
     entries = pd.DataFrame(
         [
             # High-value, hasn't sold in the trailing window -> dead_stock -> A/non_moving.
-            _row(1, "2026-05-01", "2026-07-31", "BRAND", "HIGH VALUE DEAD SKU", closing_stock=10, value=90000.0),
+            _row(
+                1,
+                "2026-05-01",
+                "2026-07-31",
+                "BRAND",
+                "HIGH VALUE DEAD SKU",
+                closing_stock=10,
+                value=90000.0,
+            ),
             # Low value, selling steadily -> healthy -> C/fast.
-            _row(1, "2026-05-01", "2026-07-31", "BRAND", "LOW VALUE FAST SKU", sales=30, closing_stock=10, value=100.0),
+            _row(
+                1,
+                "2026-05-01",
+                "2026-07-31",
+                "BRAND",
+                "LOW VALUE FAST SKU",
+                sales=30,
+                closing_stock=10,
+                value=100.0,
+            ),
         ]
     )
     summary = summarize_history(entries, dead_stock_days=90)

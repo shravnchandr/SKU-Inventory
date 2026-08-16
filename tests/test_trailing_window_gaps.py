@@ -5,6 +5,7 @@ daily_demand divides real sales by a day count that includes untracked
 days, silently understating the rate — worth flagging right on the
 Dashboard where that number is shown, not just discoverable elsewhere.
 """
+
 import pandas as pd
 
 from src.gowri_proj.analysis import summarize_history

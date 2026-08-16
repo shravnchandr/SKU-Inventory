@@ -6,6 +6,7 @@ activity in its *entire* recorded history must not be aged past however
 long it's actually been tracked — see the AGING_LOOKBACK_FLOOR_DAYS /
 earliest_period_start handling in analysis.py).
 """
+
 import pandas as pd
 import pytest
 
@@ -31,7 +32,9 @@ def _current(skus: list[str]) -> pd.DataFrame:
 
 def test_recent_purchase_not_dead():
     entries = _entries([{"sku": "A", "period_end": "2026-07-31", "purchase": 10, "sales": 0}])
-    result = _compute_dead_stock(entries, _current(["A"]), LATEST, pd.Timestamp("2025-01-01"), dead_stock_days=90)
+    result = _compute_dead_stock(
+        entries, _current(["A"]), LATEST, pd.Timestamp("2025-01-01"), dead_stock_days=90
+    )
     row = result[result["sku"] == "A"].iloc[0]
     assert not row["is_dead"]
     assert row["days_since_activity"] == 0
@@ -39,7 +42,9 @@ def test_recent_purchase_not_dead():
 
 def test_recent_sale_not_dead():
     entries = _entries([{"sku": "A", "period_end": "2026-06-30", "sales": 5}])
-    result = _compute_dead_stock(entries, _current(["A"]), LATEST, pd.Timestamp("2025-01-01"), dead_stock_days=90)
+    result = _compute_dead_stock(
+        entries, _current(["A"]), LATEST, pd.Timestamp("2025-01-01"), dead_stock_days=90
+    )
     row = result[result["sku"] == "A"].iloc[0]
     assert not row["is_dead"]  # 31 days ago, under the 90-day threshold
 
@@ -49,7 +54,9 @@ def test_recent_scheme_sale_with_zero_paid_sales_is_not_dead():
     # is still leaving the shelf — it shouldn't read as dead just because
     # none of its recent activity was a *paid* sale.
     entries = _entries([{"sku": "A", "period_end": "2026-06-30", "sales": 0, "sales_free": 5}])
-    result = _compute_dead_stock(entries, _current(["A"]), LATEST, pd.Timestamp("2025-01-01"), dead_stock_days=90)
+    result = _compute_dead_stock(
+        entries, _current(["A"]), LATEST, pd.Timestamp("2025-01-01"), dead_stock_days=90
+    )
     row = result[result["sku"] == "A"].iloc[0]
     assert not row["is_dead"]  # 31 days ago, under the 90-day threshold
 
@@ -62,7 +69,9 @@ def test_anchored_to_whichever_is_more_recent_purchase_or_sale():
             {"sku": "A", "period_end": "2026-06-30", "purchase": 0, "sales": 3},
         ]
     )
-    result = _compute_dead_stock(entries, _current(["A"]), LATEST, pd.Timestamp("2025-01-01"), dead_stock_days=90)
+    result = _compute_dead_stock(
+        entries, _current(["A"]), LATEST, pd.Timestamp("2025-01-01"), dead_stock_days=90
+    )
     row = result[result["sku"] == "A"].iloc[0]
     assert row["days_since_activity"] == (LATEST - pd.Timestamp("2026-06-30")).days
     assert not row["is_dead"]
@@ -70,7 +79,9 @@ def test_anchored_to_whichever_is_more_recent_purchase_or_sale():
 
 def test_old_purchase_and_sale_is_dead():
     entries = _entries([{"sku": "A", "period_end": "2026-01-31", "purchase": 10, "sales": 2}])
-    result = _compute_dead_stock(entries, _current(["A"]), LATEST, pd.Timestamp("2025-01-01"), dead_stock_days=90)
+    result = _compute_dead_stock(
+        entries, _current(["A"]), LATEST, pd.Timestamp("2025-01-01"), dead_stock_days=90
+    )
     row = result[result["sku"] == "A"].iloc[0]
     assert row["is_dead"]
 

@@ -5,6 +5,7 @@ row, followed by one row per SKU under that brand, followed by a "Sub Total"
 row, a blank separator row, then the next brand. This module walks the raw
 sheet and reshapes it into one row per SKU.
 """
+
 from __future__ import annotations
 
 import re
@@ -26,6 +27,7 @@ class ReportMeta:
         if self.period_start and self.period_end:
             return (self.period_end - self.period_start).days + 1
         return 122  # fallback: ~4 months
+
 
 # Column positions in the raw, headerless sheet.
 COL_NAME = 0
@@ -71,17 +73,23 @@ def load_raw(path: str) -> pd.DataFrame:
     return pd.read_excel(path, header=None)
 
 
-_PERIOD_RE = re.compile(
-    r"Stock Statement from (\d{2}/\w{3}/\d{4}) to (\d{2}/\w{3}/\d{4})"
-)
+_PERIOD_RE = re.compile(r"Stock Statement from (\d{2}/\w{3}/\d{4}) to (\d{2}/\w{3}/\d{4})")
 
 
-def parse_meta(raw: pd.DataFrame) -> ReportMeta:
-    """Pull the company name, location, and reporting period off the banner rows."""
+def _scan_banner(
+    raw: pd.DataFrame, pattern: re.Pattern
+) -> tuple[str | None, str | None, re.Match | None]:
+    """Walk the first 10 rows of a raw export looking for the company name,
+    location, and the first regex match against `pattern` — the shared shape
+    of both banner layouts this app reads (stock statement, item list): a
+    company name line, then either a location line or the line `pattern`
+    matches (order between those two isn't fixed), each in its own row.
+    Returns (company, location, match) — `match` is None if `pattern` never
+    matched within the first 10 rows.
+    """
     company = None
     location = None
-    period_start = None
-    period_end = None
+    matched = None
 
     for _, row in raw.head(10).iterrows():
         # Banner rows center their text in a merged cell, not always column 0.
@@ -92,13 +100,20 @@ def parse_meta(raw: pd.DataFrame) -> ReportMeta:
         if company is None:
             company = text
             continue
-        match = _PERIOD_RE.search(text)
+        match = pattern.search(text)
         if match:
-            period_start = pd.to_datetime(match.group(1), format="%d/%b/%Y").date()
-            period_end = pd.to_datetime(match.group(2), format="%d/%b/%Y").date()
+            matched = match
         elif location is None:
             location = text
 
+    return company, location, matched
+
+
+def parse_meta(raw: pd.DataFrame) -> ReportMeta:
+    """Pull the company name, location, and reporting period off the banner rows."""
+    company, location, match = _scan_banner(raw, _PERIOD_RE)
+    period_start = pd.to_datetime(match.group(1), format="%d/%b/%Y").date() if match else None
+    period_end = pd.to_datetime(match.group(2), format="%d/%b/%Y").date() if match else None
     return ReportMeta(company, location, period_start, period_end)
 
 
@@ -138,24 +153,8 @@ _ITEM_LIST_AS_OF_RE = re.compile(r"Item List as on (\d{2}/\d{2}/\d{4})")
 
 def parse_item_list_meta(raw: pd.DataFrame) -> ItemListMeta:
     """Pull the company name, location, and "as on" date off the banner rows."""
-    company = None
-    location = None
-    as_of = None
-
-    for _, row in raw.head(10).iterrows():
-        texts = [v.strip() for v in row if isinstance(v, str) and v.strip()]
-        if not texts:
-            continue
-        text = texts[0]
-        if company is None:
-            company = text
-            continue
-        match = _ITEM_LIST_AS_OF_RE.search(text)
-        if match:
-            as_of = pd.to_datetime(match.group(1), format="%d/%m/%Y").date()
-        elif location is None:
-            location = text
-
+    company, location, match = _scan_banner(raw, _ITEM_LIST_AS_OF_RE)
+    as_of = pd.to_datetime(match.group(1), format="%d/%m/%Y").date() if match else None
     return ItemListMeta(company, location, as_of)
 
 
@@ -218,12 +217,18 @@ def parse_item_list(path: str, sheet_name: str = "Sheet2") -> tuple[pd.DataFrame
                 "code": str(code).strip(),
                 "brand": current_brand,
                 "product_name": str(name_cell).strip(),
-                "packing": str(row[IL_COL_PACKING]).strip() if isinstance(row[IL_COL_PACKING], str) else row[IL_COL_PACKING],
+                "packing": str(row[IL_COL_PACKING]).strip()
+                if isinstance(row[IL_COL_PACKING], str)
+                else row[IL_COL_PACKING],
                 "mrp": row[IL_COL_MRP],
                 "by_rate": row[IL_COL_BY_RATE],
                 "tax_pct": row[IL_COL_TAX_PCT],
-                "hsn": str(row[IL_COL_HSN]).strip() if isinstance(row[IL_COL_HSN], str) else row[IL_COL_HSN],
-                "long_name": str(row[IL_COL_LONG_NAME]).strip() if isinstance(row[IL_COL_LONG_NAME], str) else row[IL_COL_LONG_NAME],
+                "hsn": str(row[IL_COL_HSN]).strip()
+                if isinstance(row[IL_COL_HSN], str)
+                else row[IL_COL_HSN],
+                "long_name": str(row[IL_COL_LONG_NAME]).strip()
+                if isinstance(row[IL_COL_LONG_NAME], str)
+                else row[IL_COL_LONG_NAME],
             }
         )
 

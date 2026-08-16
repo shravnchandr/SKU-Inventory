@@ -11,6 +11,7 @@ disagree with summarize_history about which report is "latest", leaving the
 actual latest report out of the trailing window entirely (current -> empty,
 total_skus -> 0) or comparing the wrong "latest two" reports for churn.
 """
+
 import pandas as pd
 
 from src.gowri_proj.analysis import find_sku_churn, summarize_history

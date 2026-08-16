@@ -34,13 +34,78 @@ sales activity:
 - ``overstock``     selling, but more than OVERSTOCK_DAYS of cover on hand
 - ``healthy``       everything else
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date
+from typing import TypedDict
 
 import numpy as np
 import pandas as pd
+
+
+class ThresholdValues(TypedDict):
+    """The six user-configurable status thresholds, with no persistence
+    metadata attached — what ``dashboard.py`` actually reads (blurbs/
+    payload) and what a bare-defaults fallback (no settings ever saved)
+    looks like. ``Settings`` below extends this with the DB row's
+    versioning fields.
+    """
+
+    low_stock_days: int
+    overstock_days: int
+    trailing_days_target: int
+    dead_stock_days: int
+    value_tier_a_pct: int
+    value_tier_b_pct: int
+
+
+class Settings(ThresholdValues):
+    """Shape of the persisted status-threshold settings — one row in
+    ``db``'s ``settings`` table, read/written by ``db.get_settings``/
+    ``db.upsert_settings`` and consumed by ``dashboard.py`` (blurbs/render)
+    and ``main.py`` (CLI threshold resolution). Defined here rather than in
+    ``db`` since every one of those modules already depends on ``analysis``
+    for the threshold constants below, and ``db``/``dashboard`` are sibling
+    modules that shouldn't depend on each other (see Agent 5's module graph).
+    """
+
+    version: int
+    updated_at: str | None
+
+
+class CoverageGap(TypedDict):
+    """One gap between two imports' periods — see find_import_gaps."""
+
+    gap_start: str
+    gap_end: str
+    days: int
+
+
+class ImportGaps(TypedDict):
+    """Return shape of find_import_gaps: two views of import coverage."""
+
+    missing_months: list[str]
+    coverage_gaps: list[CoverageGap]
+
+
+class DeadStockAgingBucket(TypedDict):
+    """One row of _dead_stock_aging's bucketed dead-stock breakdown."""
+
+    bucket: str
+    count: int
+    value: float
+
+
+class ValueSegmentSummary(TypedDict):
+    """One row of _value_segment_summary's per-(tier, movement) rollup."""
+
+    tier: str
+    movement: str
+    count: int
+    value: float
+
 
 LOW_STOCK_DAYS = 15
 OVERSTOCK_DAYS = 90
@@ -132,7 +197,9 @@ def _compute_value_tiers(current: pd.DataFrame, a_pct: float, b_pct: float) -> p
     # would (wrongly) drop the single highest-value SKU into tier C whenever
     # it alone makes up more than a_pct of total value, since there'd be
     # nothing smaller to "stay under" the cutoff with.
-    cumulative_before_pct = ordered["value"].cumsum().shift(fill_value=0) / ordered["value"].sum() * 100
+    cumulative_before_pct = (
+        ordered["value"].cumsum().shift(fill_value=0) / ordered["value"].sum() * 100
+    )
     tier = np.select(
         [cumulative_before_pct < a_pct, cumulative_before_pct < b_pct],
         ["A", "B"],
@@ -148,7 +215,18 @@ def _compute_value_segments(merged: pd.DataFrame, a_pct: float, b_pct: float) ->
     """
     tiers = _compute_value_tiers(merged, a_pct, b_pct)
     if tiers.empty:
-        return pd.DataFrame(columns=["brand", "sku", "value", "days_of_cover", "status", "tier", "movement", "segment"])
+        return pd.DataFrame(
+            columns=[
+                "brand",
+                "sku",
+                "value",
+                "days_of_cover",
+                "status",
+                "tier",
+                "movement",
+                "segment",
+            ]
+        )
     segments = merged[merged["sku"].isin(tiers.index)][
         ["brand", "sku", "value", "days_of_cover", "status"]
     ].copy()
@@ -159,12 +237,23 @@ def _compute_value_segments(merged: pd.DataFrame, a_pct: float, b_pct: float) ->
         # Every stocked SKU was out_of_stock/returned (excluded above) or had
         # some other status MOVEMENT_BY_STATUS doesn't cover — nothing left
         # to concatenate a "tier-movement" string out of.
-        return pd.DataFrame(columns=["brand", "sku", "value", "days_of_cover", "status", "tier", "movement", "segment"])
+        return pd.DataFrame(
+            columns=[
+                "brand",
+                "sku",
+                "value",
+                "days_of_cover",
+                "status",
+                "tier",
+                "movement",
+                "segment",
+            ]
+        )
     segments["segment"] = segments["tier"] + "-" + segments["movement"]
     return segments.sort_values("value", ascending=False).reset_index(drop=True)
 
 
-def _value_segment_summary(segments: pd.DataFrame) -> list:
+def _value_segment_summary(segments: pd.DataFrame) -> list[ValueSegmentSummary]:
     """Count/value per (tier, movement), in SEGMENT_ORDER — every segment
     appears even with zero SKUs in it, same convention as
     DEAD_STOCK_AGING_BUCKETS/_dead_stock_aging (a list, not a dict: Flask's
@@ -177,7 +266,14 @@ def _value_segment_summary(segments: pd.DataFrame) -> list:
             count, value = grouped.loc[(tier, movement)]
         else:
             count, value = 0, 0.0
-        result.append({"tier": tier, "movement": movement, "count": int(count), "value": round(float(value), 2)})
+        result.append(
+            {
+                "tier": tier,
+                "movement": movement,
+                "count": int(count),
+                "value": round(float(value), 2),
+            }
+        )
     return result
 
 
@@ -273,7 +369,11 @@ def _compute_dead_stock(
     # daily_demand's docstring below for the fuller reasoning; same
     # principle, applied to "has this SKU moved at all" instead of "how
     # fast").
-    last_sale_end = recent[(recent["sales"] > 0) | (recent["sales_free"] > 0)].groupby("sku")["period_end"].max()
+    last_sale_end = (
+        recent[(recent["sales"] > 0) | (recent["sales_free"] > 0)]
+        .groupby("sku")["period_end"]
+        .max()
+    )
 
     result = current_skus[["sku"]].drop_duplicates().set_index("sku")
     result["last_purchase_end"] = last_purchase_end
@@ -302,7 +402,7 @@ DEAD_STOCK_AGING_BUCKETS = [
 ]
 
 
-def _dead_stock_aging(dead_stock: pd.DataFrame) -> list:
+def _dead_stock_aging(dead_stock: pd.DataFrame) -> list[DeadStockAgingBucket]:
     """Bucket the dead-stock list by how long it's actually been dead.
 
     Returns a list (not a dict) in youngest-to-oldest bucket order — a dict
@@ -317,9 +417,16 @@ def _dead_stock_aging(dead_stock: pd.DataFrame) -> list:
             bucket = dead_stock[dead_stock["days_since_activity"] >= low]
         else:
             bucket = dead_stock[
-                (dead_stock["days_since_activity"] >= low) & (dead_stock["days_since_activity"] < high)
+                (dead_stock["days_since_activity"] >= low)
+                & (dead_stock["days_since_activity"] < high)
             ]
-        aging.append({"bucket": label, "count": int(len(bucket)), "value": round(float(bucket["value"].sum()), 2)})
+        aging.append(
+            {
+                "bucket": label,
+                "count": len(bucket),
+                "value": round(float(bucket["value"].sum()), 2),
+            }
+        )
     return aging
 
 
@@ -357,7 +464,7 @@ class HistoryMeta:
     # true daily rate (dividing real sales by a day count that includes
     # untracked days) — worth flagging prominently, not just on the Reports
     # page's Import Health, since it directly taints the number on screen.
-    trailing_window_gaps: list
+    trailing_window_gaps: list[CoverageGap]
 
 
 @dataclass
@@ -386,8 +493,8 @@ class InventorySummary:
     low_stock: pd.DataFrame
     dead_stock: pd.DataFrame
     overstock: pd.DataFrame
-    dead_stock_aging: list
-    value_segments: list
+    dead_stock_aging: list[DeadStockAgingBucket]
+    value_segments: list[ValueSegmentSummary]
     value_segment_skus: pd.DataFrame
     trend: TrendSeries
     enriched: pd.DataFrame = field(repr=False)
@@ -408,7 +515,9 @@ def summarize_history(
     (report, SKU), with report period columns joined in.
     """
     reports = (
-        all_entries[["report_id", "period_start", "period_end", "period_days", "company", "location"]]
+        all_entries[
+            ["report_id", "period_start", "period_end", "period_days", "company", "location"]
+        ]
         .drop_duplicates("report_id")
         # Tiebroken on period_start too — period_end alone isn't unique
         # (only the pair is), so without this "latest" would be
@@ -548,7 +657,16 @@ def summarize_history(
     ]
 
     def subset(status: str, sort_col: str, extra_cols: list[str] | None = None) -> pd.DataFrame:
-        cols = ["brand", "sku", "opening_stock", "purchase", "sales", "closing_stock", "value", "days_of_cover"]
+        cols = [
+            "brand",
+            "sku",
+            "opening_stock",
+            "purchase",
+            "sales",
+            "closing_stock",
+            "value",
+            "days_of_cover",
+        ]
         cols = cols + (extra_cols or [])
         s = merged[merged["status"] == status][cols]
         return s.sort_values(sort_col, ascending=False)
@@ -560,7 +678,9 @@ def summarize_history(
     value_segments = _value_segment_summary(value_segment_skus)
 
     # --- trend series, one point per imported report ---
-    per_report = all_entries.groupby("report_id").agg(value=("value", "sum"), sales=("sales", "sum"))
+    per_report = all_entries.groupby("report_id").agg(
+        value=("value", "sum"), sales=("sales", "sum")
+    )
     reports_ordered = reports.merge(per_report, on="report_id")
     labels = [
         _period_label(r["period_start"].date(), r["period_end"].date())
@@ -576,7 +696,9 @@ def summarize_history(
         .sum()
     )
     brand_units_sold: dict[str, list[float]] = {
-        brand: [float(by_brand_report.get((brand, rid), 0.0)) for rid in reports_ordered["report_id"]]
+        brand: [
+            float(by_brand_report.get((brand, rid), 0.0)) for rid in reports_ordered["report_id"]
+        ]
         for brand in top_brand_names
     }
 
@@ -633,9 +755,9 @@ def search_skus(enriched: pd.DataFrame, query: str, limit: int = 50) -> list[dic
     q = query.strip().lower()
     if len(q) < 2:
         return []
-    mask = enriched["brand"].str.lower().str.contains(q, na=False, regex=False) | enriched["sku"].str.lower().str.contains(
-        q, na=False, regex=False
-    )
+    mask = enriched["brand"].str.lower().str.contains(q, na=False, regex=False) | enriched[
+        "sku"
+    ].str.lower().str.contains(q, na=False, regex=False)
     matches = enriched[mask].sort_values("value", ascending=False).head(limit)
     return [
         {
@@ -648,7 +770,6 @@ def search_skus(enriched: pd.DataFrame, query: str, limit: int = 50) -> list[dic
         }
         for _, r in matches.iterrows()
     ]
-
 
 
 def _pair_renames_via_catalog(
@@ -709,9 +830,12 @@ def find_sku_churn(
     ago, and re-flagging it forever would just be noise.
     """
     empty = {
-        "new_skus": [], "new_total": 0,
-        "vanished_skus": [], "vanished_total": 0,
-        "likely_renames": [], "renames_total": 0,
+        "new_skus": [],
+        "new_total": 0,
+        "vanished_skus": [],
+        "vanished_total": 0,
+        "likely_renames": [],
+        "renames_total": 0,
         "previous_period_end": None,
     }
     if all_entries.empty:
@@ -756,9 +880,7 @@ def find_sku_churn(
     )
 
     def _rows(rows: dict[str, dict], names: set[str]) -> list[dict]:
-        items = sorted(
-            ({"sku": name, **rows[name]} for name in names), key=lambda r: -r["value"]
-        )
+        items = sorted(({"sku": name, **rows[name]} for name in names), key=lambda r: -r["value"])
         return items[:limit]
 
     true_new = new_names - paired_new
@@ -804,7 +926,7 @@ def find_unmatched_skus(enriched: pd.DataFrame, catalog_names: set[str], limit: 
     return {"total": int(mask.sum()), "items": items}
 
 
-def find_import_gaps(reports: pd.DataFrame) -> dict:
+def find_import_gaps(reports: pd.DataFrame) -> ImportGaps:
     """Look for gaps in monthly coverage across every imported report.
 
     ``reports`` needs ``period_start``/``period_end`` columns (e.g.
@@ -882,10 +1004,16 @@ def sku_history(all_entries: pd.DataFrame, sku: str) -> list[dict]:
 def brand_history(all_entries: pd.DataFrame, brand: str) -> list[dict]:
     """Every imported period's totals for one specific brand, oldest first."""
     rows = all_entries[all_entries["brand"] == brand]
-    per_report = rows.groupby("report_id").agg(
-        value=("value", "sum"), sales=("sales", "sum"), period_start=("period_start", "first"),
-        period_end=("period_end", "first"),
-    ).sort_values("period_end")
+    per_report = (
+        rows.groupby("report_id")
+        .agg(
+            value=("value", "sum"),
+            sales=("sales", "sum"),
+            period_start=("period_start", "first"),
+            period_end=("period_end", "first"),
+        )
+        .sort_values("period_end")
+    )
     return [
         {
             "label": _period_label(r["period_start"].date(), r["period_end"].date()),
@@ -923,8 +1051,14 @@ def _stock_balance_diff(entries):
     identical either way.
     """
     return (
-        entries["opening_stock"] + entries["purchase"] + entries["purchase_free"] + entries["other_receipt"]
-        - entries["sales"] - entries["sales_free"] - entries["other_issue"] - entries["closing_stock"]
+        entries["opening_stock"]
+        + entries["purchase"]
+        + entries["purchase_free"]
+        + entries["other_receipt"]
+        - entries["sales"]
+        - entries["sales_free"]
+        - entries["other_issue"]
+        - entries["closing_stock"]
     )
 
 
@@ -940,7 +1074,9 @@ def _quality_checks(row: pd.Series) -> list[str]:
         issues.append("Negative sales (possibly a return)")
     balance_diff = _stock_balance_diff(row)
     if abs(balance_diff) > _STOCK_BALANCE_TOLERANCE:
-        issues.append(f"Opening + purchased - sold doesn't balance to closing stock (off by {balance_diff:+.1f})")
+        issues.append(
+            f"Opening + purchased - sold doesn't balance to closing stock (off by {balance_diff:+.1f})"
+        )
     return issues
 
 

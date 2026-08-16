@@ -10,6 +10,7 @@ prompt; a rename is only paired off once db.import_item_catalog has actually
 recorded that code's old name -> new name transition (there's no code in the
 stock statement itself to resolve it from that side).
 """
+
 import openpyxl
 import pandas as pd
 import pytest
@@ -19,7 +20,9 @@ from src.gowri_proj.analysis import find_sku_churn, find_unmatched_skus
 from src.gowri_proj.parser import parse_item_list
 
 
-def _write_item_list(path, rows, company="JANHAVI MEDICALS", location="BANGALORE", as_of="09/08/2026"):
+def _write_item_list(
+    path, rows, company="JANHAVI MEDICALS", location="BANGALORE", as_of="09/08/2026"
+):
     """rows: list of either ("brand", name) or ("item", code, product, packing,
     mrp, by_rate, tax_pct, hsn, long_name) tuples.
     """
@@ -30,7 +33,9 @@ def _write_item_list(path, rows, company="JANHAVI MEDICALS", location="BANGALORE
     sheet2.append([company])
     sheet2.append([location])
     sheet2.append([f"Item List as on {as_of}"])
-    sheet2.append(["Code", "Product", "Packing", "M.R.P.", "By.Rate", "Tax%", "Sp.Rate", "HSN", "Long Name"])
+    sheet2.append(
+        ["Code", "Product", "Packing", "M.R.P.", "By.Rate", "Tax%", "Sp.Rate", "HSN", "Long Name"]
+    )
     for row in rows:
         if row[0] == "brand":
             sheet2.append([row[1]])
@@ -46,10 +51,40 @@ def test_parses_items_and_tracks_brand_headers(tmp_path):
         path,
         [
             ("brand", "CIPLA"),
-            ("item", "C001", "ARKAMIN 0.1MG TAB", "10S", 20.0, 15.0, 12.0, "3004", "ARKAMIN 0.1MG TABLET"),
-            ("item", "C002", "BUDAMATE 200 INHALER", "1S", 300.0, 250.0, 12.0, "3004", "BUDAMATE 200 INH"),
+            (
+                "item",
+                "C001",
+                "ARKAMIN 0.1MG TAB",
+                "10S",
+                20.0,
+                15.0,
+                12.0,
+                "3004",
+                "ARKAMIN 0.1MG TABLET",
+            ),
+            (
+                "item",
+                "C002",
+                "BUDAMATE 200 INHALER",
+                "1S",
+                300.0,
+                250.0,
+                12.0,
+                "3004",
+                "BUDAMATE 200 INH",
+            ),
             ("brand", "GSK"),
-            ("item", "G001", "AUGMENTIN 625 TAB", "10S", 200.0, 180.0, 12.0, "3004", "AUGMENTIN 625 DUO TAB"),
+            (
+                "item",
+                "G001",
+                "AUGMENTIN 625 TAB",
+                "10S",
+                200.0,
+                180.0,
+                12.0,
+                "3004",
+                "AUGMENTIN 625 DUO TAB",
+            ),
         ],
     )
     df, meta = parse_item_list(str(path))
@@ -88,7 +123,9 @@ def test_raises_on_mutated_header(tmp_path):
     sheet2.append(["BANGALORE"])
     sheet2.append(["Item List as on 09/08/2026"])
     # "Product" moved — the export template changed shape.
-    sheet2.append(["Code", "Packing", "Product", "M.R.P.", "By.Rate", "Tax%", "Sp.Rate", "HSN", "Long Name"])
+    sheet2.append(
+        ["Code", "Packing", "Product", "M.R.P.", "By.Rate", "Tax%", "Sp.Rate", "HSN", "Long Name"]
+    )
     sheet2.append(["C001", "10S", "ARKAMIN", 20.0, 15.0, 12.0, None, "3004", "ARKAMIN LONG"])
     wb.save(path)
 
@@ -102,7 +139,15 @@ def test_empty_item_list_returns_empty_df(tmp_path):
     df, _ = parse_item_list(str(path))
     assert df.empty
     assert list(df.columns) == [
-        "code", "brand", "product_name", "packing", "mrp", "by_rate", "tax_pct", "hsn", "long_name",
+        "code",
+        "brand",
+        "product_name",
+        "packing",
+        "mrp",
+        "by_rate",
+        "tax_pct",
+        "hsn",
+        "long_name",
     ]
 
 
@@ -131,7 +176,9 @@ def test_find_unmatched_skus_flags_names_absent_from_catalog():
 
 
 def test_find_unmatched_skus_matches_via_long_name_too():
-    enriched = _enriched([{"sku": "AUGMENTIN 625 DUO TAB", "brand": "GSK", "closing_stock": 5, "value": 100.0}])
+    enriched = _enriched(
+        [{"sku": "AUGMENTIN 625 DUO TAB", "brand": "GSK", "closing_stock": 5, "value": 100.0}]
+    )
     # Only present as the catalog's long_name, not its product_name.
     catalog_names = {"AUGMENTIN 625 TAB", "AUGMENTIN 625 DUO TAB"}
     result = find_unmatched_skus(enriched, catalog_names)
@@ -149,7 +196,10 @@ def test_find_unmatched_skus_total_reflects_true_count_beyond_display_limit():
     # the true count — the UI headline ("N SKUs don't match...") would
     # otherwise silently understate the problem whenever it's large.
     enriched = _enriched(
-        [{"sku": f"UNMATCHED {i}", "brand": "X", "closing_stock": 1, "value": float(i)} for i in range(5)]
+        [
+            {"sku": f"UNMATCHED {i}", "brand": "X", "closing_stock": 1, "value": float(i)}
+            for i in range(5)
+        ]
     )
     result = find_unmatched_skus(enriched, catalog_names={"SOMETHING ELSE ENTIRELY"}, limit=2)
     assert result["total"] == 5
@@ -168,7 +218,12 @@ def _all_entries(reports: list[dict]) -> pd.DataFrame:
         period_start = r.get("period_start", r["period_end"])
         for sku_row in r["skus"]:
             rows.append(
-                {"report_id": r["report_id"], "period_start": period_start, "period_end": r["period_end"], **sku_row}
+                {
+                    "report_id": r["report_id"],
+                    "period_start": period_start,
+                    "period_end": r["period_end"],
+                    **sku_row,
+                }
             )
     df = pd.DataFrame(rows)
     df["period_start"] = pd.to_datetime(df["period_start"])
@@ -178,13 +233,22 @@ def _all_entries(reports: list[dict]) -> pd.DataFrame:
 
 def test_find_sku_churn_needs_at_least_two_reports():
     entries = _all_entries(
-        [{"report_id": 1, "period_end": "2026-07-31", "skus": [{"sku": "A", "brand": "X", "closing_stock": 1, "value": 1.0}]}]
+        [
+            {
+                "report_id": 1,
+                "period_end": "2026-07-31",
+                "skus": [{"sku": "A", "brand": "X", "closing_stock": 1, "value": 1.0}],
+            }
+        ]
     )
     result = find_sku_churn(entries)
     assert result == {
-        "new_skus": [], "new_total": 0,
-        "vanished_skus": [], "vanished_total": 0,
-        "likely_renames": [], "renames_total": 0,
+        "new_skus": [],
+        "new_total": 0,
+        "vanished_skus": [],
+        "vanished_total": 0,
+        "likely_renames": [],
+        "renames_total": 0,
         "previous_period_end": None,
     }
 
@@ -193,14 +257,16 @@ def test_find_sku_churn_flags_new_and_vanished_names():
     entries = _all_entries(
         [
             {
-                "report_id": 1, "period_end": "2026-06-30",
+                "report_id": 1,
+                "period_end": "2026-06-30",
                 "skus": [
                     {"sku": "STAYS", "brand": "X", "closing_stock": 1, "value": 1.0},
                     {"sku": "OLD NAME", "brand": "X", "closing_stock": 5, "value": 500.0},
                 ],
             },
             {
-                "report_id": 2, "period_end": "2026-07-31",
+                "report_id": 2,
+                "period_end": "2026-07-31",
                 "skus": [
                     {"sku": "STAYS", "brand": "X", "closing_stock": 1, "value": 1.0},
                     {"sku": "NEW NAME", "brand": "X", "closing_stock": 5, "value": 500.0},
@@ -221,9 +287,21 @@ def test_find_sku_churn_only_compares_the_latest_two_reports():
     # re-surfacing it forever on every visit would just be noise.
     entries = _all_entries(
         [
-            {"report_id": 1, "period_end": "2026-05-31", "skus": [{"sku": "ANCIENT", "brand": "X", "closing_stock": 1, "value": 1.0}]},
-            {"report_id": 2, "period_end": "2026-06-30", "skus": [{"sku": "STABLE", "brand": "X", "closing_stock": 1, "value": 1.0}]},
-            {"report_id": 3, "period_end": "2026-07-31", "skus": [{"sku": "STABLE", "brand": "X", "closing_stock": 1, "value": 1.0}]},
+            {
+                "report_id": 1,
+                "period_end": "2026-05-31",
+                "skus": [{"sku": "ANCIENT", "brand": "X", "closing_stock": 1, "value": 1.0}],
+            },
+            {
+                "report_id": 2,
+                "period_end": "2026-06-30",
+                "skus": [{"sku": "STABLE", "brand": "X", "closing_stock": 1, "value": 1.0}],
+            },
+            {
+                "report_id": 3,
+                "period_end": "2026-07-31",
+                "skus": [{"sku": "STABLE", "brand": "X", "closing_stock": 1, "value": 1.0}],
+            },
         ]
     )
     result = find_sku_churn(entries)
@@ -238,8 +316,30 @@ def test_find_sku_churn_pairs_a_rename_confirmed_by_the_alias_map():
     # vanished.
     entries = _all_entries(
         [
-            {"report_id": 1, "period_end": "2026-06-30", "skus": [{"sku": "AMLOKIND 5MG TAB", "brand": "MICRO", "closing_stock": 5, "value": 500.0}]},
-            {"report_id": 2, "period_end": "2026-07-31", "skus": [{"sku": "AMLOKIND 5MG TAB (NON)", "brand": "MICRO", "closing_stock": 5, "value": 500.0}]},
+            {
+                "report_id": 1,
+                "period_end": "2026-06-30",
+                "skus": [
+                    {
+                        "sku": "AMLOKIND 5MG TAB",
+                        "brand": "MICRO",
+                        "closing_stock": 5,
+                        "value": 500.0,
+                    }
+                ],
+            },
+            {
+                "report_id": 2,
+                "period_end": "2026-07-31",
+                "skus": [
+                    {
+                        "sku": "AMLOKIND 5MG TAB (NON)",
+                        "brand": "MICRO",
+                        "closing_stock": 5,
+                        "value": 500.0,
+                    }
+                ],
+            },
         ]
     )
     alias_map = {"AMLOKIND 5MG TAB": "AMLOKIND 5MG TAB (NON)"}
@@ -248,7 +348,13 @@ def test_find_sku_churn_pairs_a_rename_confirmed_by_the_alias_map():
     assert result["vanished_total"] == 0
     assert result["renames_total"] == 1
     assert result["likely_renames"] == [
-        {"brand": "MICRO", "old_name": "AMLOKIND 5MG TAB", "new_name": "AMLOKIND 5MG TAB (NON)", "closing_stock": 5.0, "value": 500.0}
+        {
+            "brand": "MICRO",
+            "old_name": "AMLOKIND 5MG TAB",
+            "new_name": "AMLOKIND 5MG TAB (NON)",
+            "closing_stock": 5.0,
+            "value": 500.0,
+        }
     ]
 
 
@@ -259,8 +365,16 @@ def test_find_sku_churn_does_not_pair_without_a_confirming_alias():
     # resolve it from; only a fresh catalog import can.
     entries = _all_entries(
         [
-            {"report_id": 1, "period_end": "2026-06-30", "skus": [{"sku": "XYZ 10G", "brand": "MICRO", "closing_stock": 5, "value": 500.0}]},
-            {"report_id": 2, "period_end": "2026-07-31", "skus": [{"sku": "XYZ 10GM", "brand": "MICRO", "closing_stock": 5, "value": 500.0}]},
+            {
+                "report_id": 1,
+                "period_end": "2026-06-30",
+                "skus": [{"sku": "XYZ 10G", "brand": "MICRO", "closing_stock": 5, "value": 500.0}],
+            },
+            {
+                "report_id": 2,
+                "period_end": "2026-07-31",
+                "skus": [{"sku": "XYZ 10GM", "brand": "MICRO", "closing_stock": 5, "value": 500.0}],
+            },
         ]
     )
     result = find_sku_churn(entries)
@@ -275,8 +389,16 @@ def test_find_sku_churn_does_not_pair_a_different_strength_even_with_an_unrelate
     # name has to be a key that maps to exactly this new name, nothing looser.
     entries = _all_entries(
         [
-            {"report_id": 1, "period_end": "2026-06-30", "skus": [{"sku": "DOLO 650", "brand": "MICRO", "closing_stock": 5, "value": 500.0}]},
-            {"report_id": 2, "period_end": "2026-07-31", "skus": [{"sku": "DOLO 350", "brand": "MICRO", "closing_stock": 5, "value": 500.0}]},
+            {
+                "report_id": 1,
+                "period_end": "2026-06-30",
+                "skus": [{"sku": "DOLO 650", "brand": "MICRO", "closing_stock": 5, "value": 500.0}],
+            },
+            {
+                "report_id": 2,
+                "period_end": "2026-07-31",
+                "skus": [{"sku": "DOLO 350", "brand": "MICRO", "closing_stock": 5, "value": 500.0}],
+            },
         ]
     )
     alias_map = {"SOMETHING ELSE": "SOMETHING ELSE V2"}
@@ -293,12 +415,16 @@ def test_find_sku_churn_ignores_an_alias_whose_target_isnt_in_the_new_report():
     entries = _all_entries(
         [
             {
-                "report_id": 1, "period_end": "2026-06-30",
+                "report_id": 1,
+                "period_end": "2026-06-30",
                 "skus": [{"sku": "OLD NAME", "brand": "X", "closing_stock": 5, "value": 500.0}],
             },
             {
-                "report_id": 2, "period_end": "2026-07-31",
-                "skus": [{"sku": "UNRELATED STABLE SKU", "brand": "X", "closing_stock": 1, "value": 1.0}],
+                "report_id": 2,
+                "period_end": "2026-07-31",
+                "skus": [
+                    {"sku": "UNRELATED STABLE SKU", "brand": "X", "closing_stock": 1, "value": 1.0}
+                ],
             },
         ]
     )
@@ -311,14 +437,31 @@ def test_find_sku_churn_ignores_an_alias_whose_target_isnt_in_the_new_report():
 def _catalog_df(rows):
     """rows: dicts with code, brand, product_name, packing, mrp, by_rate,
     tax_pct, hsn, long_name."""
-    cols = ["code", "brand", "product_name", "packing", "mrp", "by_rate", "tax_pct", "hsn", "long_name"]
+    cols = [
+        "code",
+        "brand",
+        "product_name",
+        "packing",
+        "mrp",
+        "by_rate",
+        "tax_pct",
+        "hsn",
+        "long_name",
+    ]
     return pd.DataFrame(rows)[cols]
 
 
 def _catalog_row(code, product_name, long_name, brand="MICRO"):
     return {
-        "code": code, "brand": brand, "product_name": product_name, "packing": "1S",
-        "mrp": 1.0, "by_rate": 1.0, "tax_pct": 12.0, "hsn": "3004", "long_name": long_name,
+        "code": code,
+        "brand": brand,
+        "product_name": product_name,
+        "packing": "1S",
+        "mrp": 1.0,
+        "by_rate": 1.0,
+        "tax_pct": 12.0,
+        "hsn": "3004",
+        "long_name": long_name,
     }
 
 
@@ -346,7 +489,12 @@ def test_import_item_catalog_logs_nothing_for_a_brand_new_code(tmp_path):
         db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "XYZ 10G", "XYZ 10G TUBE")]))
         db.import_item_catalog(
             conn,
-            _catalog_df([_catalog_row("C1", "XYZ 10G", "XYZ 10G TUBE"), _catalog_row("C2", "NEW ITEM", "NEW ITEM LONG")]),
+            _catalog_df(
+                [
+                    _catalog_row("C1", "XYZ 10G", "XYZ 10G TUBE"),
+                    _catalog_row("C2", "NEW ITEM", "NEW ITEM LONG"),
+                ]
+            ),
         )
         alias_map = db.get_name_change_map(conn)
     assert alias_map == {}
@@ -367,14 +515,38 @@ def test_rollback_item_catalog_undoes_the_catalog_and_only_the_new_renames(tmp_p
     # rename the about-to-be-rolled-back import itself added (C2) should be
     # removed.
     with db.connect(str(tmp_path / "test.db")) as conn:
-        db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "OLD NAME 1", "OLD NAME 1 LONG"), _catalog_row("C2", "STABLE", "STABLE LONG")]))
-        db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "NEW NAME 1", "NEW NAME 1 LONG"), _catalog_row("C2", "STABLE", "STABLE LONG")]))
+        db.import_item_catalog(
+            conn,
+            _catalog_df(
+                [
+                    _catalog_row("C1", "OLD NAME 1", "OLD NAME 1 LONG"),
+                    _catalog_row("C2", "STABLE", "STABLE LONG"),
+                ]
+            ),
+        )
+        db.import_item_catalog(
+            conn,
+            _catalog_df(
+                [
+                    _catalog_row("C1", "NEW NAME 1", "NEW NAME 1 LONG"),
+                    _catalog_row("C2", "STABLE", "STABLE LONG"),
+                ]
+            ),
+        )
         snapshot = db.get_item_catalog_df(conn)
         watermark = db.get_item_name_changes_watermark(conn)
 
         # Simulate the failed-upload import: C2 gets renamed too, on top of
         # the already-committed C1 rename above.
-        db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "NEW NAME 1", "NEW NAME 1 LONG"), _catalog_row("C2", "RENAMED LATE", "RENAMED LATE LONG")]))
+        db.import_item_catalog(
+            conn,
+            _catalog_df(
+                [
+                    _catalog_row("C1", "NEW NAME 1", "NEW NAME 1 LONG"),
+                    _catalog_row("C2", "RENAMED LATE", "RENAMED LATE LONG"),
+                ]
+            ),
+        )
 
         db.rollback_item_catalog(conn, snapshot, watermark)
         alias_map = db.get_name_change_map(conn)

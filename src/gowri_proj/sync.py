@@ -10,6 +10,7 @@ file that changed to cover a *different* period than it used to (same
 identity, new period) is flagged too rather than quietly creating a second
 report and orphaning the first.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -21,6 +22,7 @@ from . import db
 from .parser import parse_stock_statement
 
 SUPPORTED_SUFFIXES = {".xls", ".xlsx"}
+DEFAULT_UPLOADS_DIR = "uploads"
 
 
 def fy_folder(d: date) -> str:
@@ -42,15 +44,21 @@ def _is_candidate(path: Path, folder_path: Path) -> bool:
         return False
     rel_parts = path.relative_to(folder_path).parts
     # Excel lock files (~$...), dotfiles, and anything under a hidden folder.
-    return not any(part.startswith("~$") or part.startswith(".") for part in rel_parts)
+    return not any(part.startswith(("~$", ".")) for part in rel_parts)
 
 
 @dataclass
 class SyncResult:
-    imported: list[tuple[str, str, str, int]] = field(default_factory=list)  # rel_path, start, end, sku_count
+    imported: list[tuple[str, str, str, int]] = field(
+        default_factory=list
+    )  # rel_path, start, end, sku_count
     unchanged: list[str] = field(default_factory=list)
-    duplicate_period: list[tuple[str, str, str]] = field(default_factory=list)  # rel_path, start, end
-    filename_reused: list[tuple[str, str, str]] = field(default_factory=list)  # rel_path, old period, new period
+    duplicate_period: list[tuple[str, str, str]] = field(
+        default_factory=list
+    )  # rel_path, start, end
+    filename_reused: list[tuple[str, str, str]] = field(
+        default_factory=list
+    )  # rel_path, old period, new period
     errors: list[tuple[str, str]] = field(default_factory=list)  # rel_path, error message
 
 
@@ -89,7 +97,9 @@ def sync_folder(conn: sqlite3.Connection, folder: str) -> SyncResult:
             continue
 
         if df.empty:
-            msg = "No SKU rows could be read from this file — it may not be a stock statement export"
+            msg = (
+                "No SKU rows could be read from this file — it may not be a stock statement export"
+            )
             result.errors.append((rel_name, msg))
             db.upsert_watched_file(conn, rel_name, filesize, mtime, None, "error", msg)
             continue
@@ -119,7 +129,9 @@ def sync_folder(conn: sqlite3.Connection, folder: str) -> SyncResult:
             continue
 
         existing_report_id = db.period_exists(conn, meta)
-        if existing_report_id is not None and (known is None or known["report_id"] != existing_report_id):
+        if existing_report_id is not None and (
+            known is None or known["report_id"] != existing_report_id
+        ):
             # This period is already in the database from a different file.
             result.duplicate_period.append(
                 (rel_name, meta.period_start.isoformat(), meta.period_end.isoformat())
@@ -137,9 +149,7 @@ def sync_folder(conn: sqlite3.Connection, folder: str) -> SyncResult:
             result.errors.append((rel_name, str(e)))
             db.upsert_watched_file(conn, rel_name, filesize, mtime, None, "error", str(e))
             continue
-        db.upsert_watched_file(
-            conn, rel_name, filesize, mtime, import_result.report_id, "imported"
-        )
+        db.upsert_watched_file(conn, rel_name, filesize, mtime, import_result.report_id, "imported")
         result.imported.append(
             (rel_name, meta.period_start.isoformat(), meta.period_end.isoformat(), len(df))
         )

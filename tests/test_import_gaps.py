@@ -1,13 +1,12 @@
 """Unit tests for analysis.find_import_gaps."""
+
 import pandas as pd
 
 from src.gowri_proj.analysis import find_import_gaps
 
 
 def _reports(periods: list[tuple[str, str]]) -> pd.DataFrame:
-    return pd.DataFrame(
-        [{"period_start": s, "period_end": e} for s, e in periods]
-    )
+    return pd.DataFrame([{"period_start": s, "period_end": e} for s, e in periods])
 
 
 def test_empty_reports_has_no_gaps():

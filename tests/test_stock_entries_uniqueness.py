@@ -5,6 +5,7 @@ the one-time migration that dedupes a pre-existing database before the
 index can even be created, and that the index actually rejects a duplicate
 insert going forward.
 """
+
 import sqlite3
 
 import pytest

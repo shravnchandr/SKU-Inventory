@@ -14,6 +14,7 @@ row's status against _status() computed independently from that same row's
 closing_stock/is_dead/days_of_cover — if the vectorized logic and the
 if/elif chain ever drift, this fails.
 """
+
 import pandas as pd
 
 from src.gowri_proj.analysis import _status, summarize_history
@@ -25,8 +26,16 @@ TRAILING_DAYS_TARGET = 60
 
 
 def _row(
-    report_id, period_start, period_end, sku, *,
-    sales=0.0, purchase=0.0, other_issue=0.0, closing_stock=0.0, value=100.0,
+    report_id,
+    period_start,
+    period_end,
+    sku,
+    *,
+    sales=0.0,
+    purchase=0.0,
+    other_issue=0.0,
+    closing_stock=0.0,
+    value=100.0,
 ):
     return {
         "report_id": report_id,
@@ -90,10 +99,16 @@ def test_vectorized_status_matches_status_function_for_every_row():
 
     for _, row in summary.enriched.iterrows():
         expected = _status(
-            row["closing_stock"], row["is_dead"], row["days_of_cover"], row["is_returned"],
-            LOW_STOCK_DAYS, OVERSTOCK_DAYS,
+            row["closing_stock"],
+            row["is_dead"],
+            row["days_of_cover"],
+            row["is_returned"],
+            LOW_STOCK_DAYS,
+            OVERSTOCK_DAYS,
         )
-        assert row["status"] == expected, f"{row['sku']}: vectorized={row['status']!r} but _status()={expected!r}"
+        assert row["status"] == expected, (
+            f"{row['sku']}: vectorized={row['status']!r} but _status()={expected!r}"
+        )
 
     # Also confirm each SKU actually landed in the bucket the test data was
     # built for — a passing per-row check above would be hollow if every

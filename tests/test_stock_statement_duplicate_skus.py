@@ -5,16 +5,28 @@ one stock_entries row per (report, sku), and analysis.py's "current
 snapshot" assumes the same; two rows for the same SKU would otherwise
 silently double-count its stock/value everywhere downstream.
 """
+
 import openpyxl
 import pytest
 
 from src.gowri_proj.parser import parse_stock_statement
 
 HEADER_ROW = [
-    "Item", None, None, None, None,
-    "Opening Stock", "Purchase", "Purchase Free", "Other Receipt",
-    "Sales", "Sales Free", "Other Issue", None,
-    "Closing Stock", "Value",
+    "Item",
+    None,
+    None,
+    None,
+    None,
+    "Opening Stock",
+    "Purchase",
+    "Purchase Free",
+    "Other Receipt",
+    "Sales",
+    "Sales Free",
+    "Other Issue",
+    None,
+    "Closing Stock",
+    "Value",
 ]
 
 
