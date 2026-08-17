@@ -32,6 +32,13 @@ Close the app first if it's running. Requires the folder to have been set
 up to receive updates (ask whoever set this up on this device if
 `update.command`/`update.bat` says it isn't).
 
+If `git` (the tool that fetches the update) isn't installed yet, the script
+installs it automatically — via Homebrew on Mac if you have it, otherwise
+Apple's own Command Line Tools installer (a window pops up; click Install
+and wait for it to finish, then run `update.command` again); via `winget`
+on Windows. If neither is available, it tells you where to download git
+from instead.
+
 ## Daily use
 
 - **Mac**: double-click `run.command`

@@ -9,9 +9,28 @@ echo.
 
 where git >nul 2>nul
 if not %errorlevel%==0 (
-  echo git isn't available on this computer — can't check for updates this way.
-  pause
-  exit /b 1
+  echo git isn't installed yet — installing it now...
+  where winget >nul 2>nul
+  if not %errorlevel%==0 (
+    echo.
+    echo Couldn't install git automatically ^(winget isn't available on this computer^).
+    echo Install it yourself from https://git-scm.com/download/win, then run this update again.
+    pause
+    exit /b 1
+  )
+  winget install --id Git.Git -e --source winget --accept-package-agreements --accept-source-agreements
+  REM The installer updates PATH for *future* sessions only — add its usual
+  REM install location so the rest of this script can find it right away.
+  set "PATH=%ProgramFiles%\Git\cmd;%PATH%"
+  where git >nul 2>nul
+  if not %errorlevel%==0 (
+    echo.
+    echo git installed, but this window can't find it yet. Close this window, open a new
+    echo Command Prompt, and run this script again — that's usually enough.
+    pause
+    exit /b 1
+  )
+  echo git installed.
 )
 
 if not exist ".git" (

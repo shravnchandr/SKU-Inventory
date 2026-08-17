@@ -13,7 +13,23 @@ fail() {
   exit 1
 }
 
-command -v git >/dev/null 2>&1 || fail "git isn't available on this computer — can't check for updates this way."
+if ! command -v git >/dev/null 2>&1; then
+  echo "git isn't installed yet — installing it now..."
+  if command -v brew >/dev/null 2>&1; then
+    brew install git || fail "Couldn't install git automatically. Install it yourself (e.g. from https://git-scm.com/download/mac), then run this update again."
+  else
+    # No Homebrew — Apple's own Command Line Tools installer includes git
+    # and needs no other tool to bootstrap, but it's a GUI dialog + a
+    # background download there's no clean way to wait on from a script.
+    echo "A software install window should open shortly — click Install there, wait for it"
+    echo "to finish (a few minutes), then double-click update.command again."
+    xcode-select --install
+    read -p "Press Enter to close..."
+    exit 1
+  fi
+  command -v git >/dev/null 2>&1 || fail "git still isn't available after installing — install it yourself (e.g. from https://git-scm.com/download/mac), then run this update again."
+  echo "git installed: $(git --version)"
+fi
 
 [ -d ".git" ] || fail "This folder isn't set up to receive updates automatically.
 Ask whoever set up this app to re-copy the latest version of the folder instead."
