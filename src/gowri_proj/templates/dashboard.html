@@ -28,6 +28,25 @@
   .move-strip a { color: var(--accent); font-weight: 600; text-decoration: none; }
   .move-strip a:hover { color: var(--accent-hover); }
 
+  /* The one place this app deliberately breaks its own quiet, uniform
+     rhythm: an actual "go do something now" state (out-of-stock/low-stock)
+     earns more visual weight than everything else on the page, or it just
+     reads as another card among cards. Reserved for that state alone —
+     the all-clear message and the (secondary, informational) gap warning
+     below stay at the calm baseline; not everything can be loud. */
+  .move-strip-urgent {
+    background: color-mix(in srgb, var(--status-critical) 10%, var(--surface-1));
+    border-color: color-mix(in srgb, var(--status-critical) 35%, var(--border));
+    border-left: 4px solid var(--status-critical);
+    font-size: var(--text-lg);
+    padding: 14px 18px;
+  }
+  .move-strip-urgent .status-swatch { width: 11px; height: 11px; }
+  .move-strip-urgent strong { font-weight: 700; }
+
+  /* A lighter touch for the gap warning — worth a glance, not a klaxon. */
+  .move-strip-notice { border-left: 4px solid var(--status-warning); }
+
   /* ---------- status list (also doubles as the action-tab switcher) ---------- */
   /* margin-bottom is larger than the inter-row gap — this list doubles as
      both a summary and the tab switcher, so it needs a clear break from the
@@ -140,6 +159,7 @@ document.getElementById('footer-note').textContent =
   const totalDays = gaps.reduce((sum, g) => sum + g.days, 0);
   const el = document.getElementById('gap-strip');
   el.style.display = '';
+  el.classList.add('move-strip-notice');
   el.innerHTML = `<span class="status-swatch" style="background:${css.getPropertyValue('--status-warning').trim()}"></span>` +
     `Sales pace is based on an incomplete history — ${fmtNum(totalDays)} day${totalDays === 1 ? '' : 's'} missing ` +
     `within the trailing ${DATA.meta.trailing_days}-day window, so it likely understates the real rate. ` +
@@ -152,12 +172,14 @@ document.getElementById('footer-note').textContent =
   const low = DATA.status_breakdown.find(s => s.status === 'low_stock')?.count || 0;
   const el = document.getElementById('move-strip');
   if (oos === 0 && low === 0) {
+    el.classList.remove('move-strip-urgent');
     el.innerHTML = `<span class="status-swatch" style="background:${css.getPropertyValue('--status-good').trim()}"></span>` +
       `Nothing urgent — no SKUs out of stock or running low.`;
   } else {
     const parts = [];
-    if (oos > 0) parts.push(`${fmtNum(oos)} out of stock`);
-    if (low > 0) parts.push(`${fmtNum(low)} low stock`);
+    if (oos > 0) parts.push(`<strong>${fmtNum(oos)}</strong> out of stock`);
+    if (low > 0) parts.push(`<strong>${fmtNum(low)}</strong> low stock`);
+    el.classList.add('move-strip-urgent');
     el.innerHTML = `<span class="status-swatch" style="background:${css.getPropertyValue('--status-critical').trim()}"></span>` +
       `${parts.join(', ')} — <a href="#action-hero">review below ↓</a>`;
   }

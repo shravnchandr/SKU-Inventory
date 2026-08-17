@@ -37,9 +37,9 @@
     --status-critical: #d03b3b;
 
     /* UI accent — separate from --series-1, which stays the colorblind-validated chart palette */
-    --accent:        #0071e3;
-    --accent-hover:  #0077ed;
-    --accent-active: #0068d1;
+    --accent:        #0f766e;
+    --accent-hover:  #0d9488;
+    --accent-active: #115e59;
 
     --shadow-sm: 0 1px 2px rgba(0,0,0,0.06), 0 1px 1px rgba(0,0,0,0.04);
     --shadow-md: 0 2px 8px rgba(0,0,0,0.08), 0 1px 2px rgba(0,0,0,0.05);
@@ -83,9 +83,9 @@
       --status-serious:  #ec835a;
       --status-critical: #e66767;
 
-      --accent:        #0a84ff;
-      --accent-hover:  #2b95ff;
-      --accent-active: #0871db;
+      --accent:        #0d9488;
+      --accent-hover:  #2dd4bf;
+      --accent-active: #14b8a6;
 
       --shadow-sm: 0 1px 2px rgba(0,0,0,0.24), 0 1px 1px rgba(0,0,0,0.16);
       --shadow-md: 0 2px 10px rgba(0,0,0,0.32), 0 1px 2px rgba(0,0,0,0.20);
@@ -113,9 +113,9 @@
     --status-serious:  #ec835a;
     --status-critical: #e66767;
 
-    --accent:        #0a84ff;
-    --accent-hover:  #2b95ff;
-    --accent-active: #0871db;
+    --accent:        #0d9488;
+    --accent-hover:  #2dd4bf;
+    --accent-active: #14b8a6;
 
     --shadow-sm: 0 1px 2px rgba(0,0,0,0.24), 0 1px 1px rgba(0,0,0,0.16);
     --shadow-md: 0 2px 10px rgba(0,0,0,0.32), 0 1px 2px rgba(0,0,0,0.20);
@@ -246,6 +246,20 @@
   }
   .move-strip .status-swatch { width: 8px; height: 8px; }
   .move-strip a { color: var(--accent); font-weight: 600; text-decoration: none; }
+
+  /* See templates/dashboard.html's copy of this rule for the full
+     reasoning — the one deliberate break from this app's otherwise quiet,
+     uniform rhythm, reserved for the actual out-of-stock/low-stock alert. */
+  .move-strip-urgent {
+    background: color-mix(in srgb, var(--status-critical) 10%, var(--surface-1));
+    border-color: color-mix(in srgb, var(--status-critical) 35%, var(--border));
+    border-left: 4px solid var(--status-critical);
+    font-size: var(--text-lg);
+    padding: 14px 18px;
+  }
+  .move-strip-urgent .status-swatch { width: 11px; height: 11px; }
+  .move-strip-urgent strong { font-weight: 700; }
+  .move-strip-notice { border-left: 4px solid var(--status-warning); }
 
   /* ---------- collapsible card (bare — no persistence in this offline file, ---------- */
   /* it's regenerated fresh each CLI run, so there's nothing to remember) */
@@ -434,6 +448,7 @@ document.getElementById('footer-note').textContent =
   const totalDays = gaps.reduce((sum, g) => sum + g.days, 0);
   const el = document.getElementById('gap-strip');
   el.style.display = '';
+  el.classList.add('move-strip-notice');
   el.innerHTML = `<span class="status-swatch" style="background:${css.getPropertyValue('--status-warning').trim()}"></span>` +
     `Sales pace is based on an incomplete history — ${fmtNum(totalDays)} day${totalDays === 1 ? '' : 's'} missing ` +
     `within the trailing ${DATA.meta.trailing_days}-day window, so it likely understates the real rate.`;
@@ -456,12 +471,14 @@ document.getElementById('kpi-row').innerHTML = kpis.map(k =>
   const low = DATA.status_breakdown.find(s => s.status === 'low_stock')?.count || 0;
   const el = document.getElementById('move-strip');
   if (oos === 0 && low === 0) {
+    el.classList.remove('move-strip-urgent');
     el.innerHTML = `<span class="status-swatch" style="background:${css.getPropertyValue('--status-good').trim()}"></span>` +
       `Nothing urgent — no SKUs out of stock or running low.`;
   } else {
     const parts = [];
-    if (oos > 0) parts.push(`${fmtNum(oos)} out of stock`);
-    if (low > 0) parts.push(`${fmtNum(low)} low stock`);
+    if (oos > 0) parts.push(`<strong>${fmtNum(oos)}</strong> out of stock`);
+    if (low > 0) parts.push(`<strong>${fmtNum(low)}</strong> low stock`);
+    el.classList.add('move-strip-urgent');
     el.innerHTML = `<span class="status-swatch" style="background:${css.getPropertyValue('--status-critical').trim()}"></span>` +
       `${parts.join(', ')} — <a href="#action-hero">review below ↓</a>`;
   }
