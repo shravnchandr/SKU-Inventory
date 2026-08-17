@@ -145,7 +145,7 @@ def sync_folder(conn: sqlite3.Connection, folder: str) -> SyncResult:
             import_result = db.import_report(
                 conn, df, meta, rel_name, replace=(existing_report_id is not None)
             )
-        except ValueError as e:  # a partial-overlap conflict — see find_superseded_reports
+        except ValueError as e:  # e.g. an unparseable file slipping past the checks above
             result.errors.append((rel_name, str(e)))
             db.upsert_watched_file(conn, rel_name, filesize, mtime, None, "error", str(e))
             continue

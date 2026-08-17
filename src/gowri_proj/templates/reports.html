@@ -527,7 +527,7 @@ setupDropzone({
   endpoint: '/api/upload',
   onSuccess: data => `✓ ${data.period_start} to ${data.period_end} · ${data.sku_count.toLocaleString('en-IN')} SKUs` +
     (data.superseded_report_ids?.length
-      ? ` (replaced ${data.superseded_report_ids.length} earlier report${data.superseded_report_ids.length === 1 ? '' : 's'} it fully overlapped)`
+      ? ` (replaced ${data.superseded_report_ids.length} earlier report${data.superseded_report_ids.length === 1 ? '' : 's'} it overlapped)`
       : ''),
   afterEach: refreshReportsFromServer,
 });

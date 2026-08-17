@@ -38,6 +38,13 @@ CREATE TABLE IF NOT EXISTS reports (
     UNIQUE (period_start, period_end)
 );
 
+-- Speeds up the overlap query (find_overlapping_reports) and list_reports'
+-- ORDER BY period_end as this table grows from tens of rows (monthly
+-- cadence) to hundreds/thousands (daily). A plain index, unlike the unique
+-- one on stock_entries, can't fail against existing data, so it doesn't
+-- need the _migrate()-time dance — safe straight in SCHEMA.
+CREATE INDEX IF NOT EXISTS idx_reports_period_end ON reports(period_end);
+
 CREATE TABLE IF NOT EXISTS stock_entries (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     report_id INTEGER NOT NULL REFERENCES reports(id) ON DELETE CASCADE,
@@ -273,34 +280,23 @@ def delete_report(conn: sqlite3.Connection, report_id: int) -> bool:
     return cur.rowcount > 0
 
 
-def find_superseded_reports(
-    conn: sqlite3.Connection, meta: ReportMeta
-) -> tuple[list[int], list[tuple[int, str, str]]]:
+def find_overlapping_reports(conn: sqlite3.Connection, meta: ReportMeta) -> list[int]:
     """Reports whose date range overlaps the new one — a genuinely different
     scenario from period_exists's exact match (handled separately via
     replace), and excluded from this query's results so the two mechanisms
     never double-handle the same report.
 
-    Split into two groups, because only one of them can be resolved
-    automatically:
-    - superseded: the new upload's range *fully contains* theirs (starts no
-      later than theirs and ends no earlier) — e.g. a progressively
-      re-exported "first week" superseded by "first two weeks" superseded
-      by the full month, which is how this app expects reports to normally
-      accumulate mid-period. Safe to delete and replace with the new, more
-      complete report. Reaching only as far as their *end* isn't enough —
-      e.g. existing 2026-06-01..06-30 and a new 2026-06-15..07-15 upload
-      both end later than 06-30, but the new one starts after the old one
-      does, so days 1-14 would be silently lost if this only checked the
-      end date. Full containment is the only shape where nothing the old
-      report covered is missing from the new one.
-    - blocking: overlaps without the new upload fully containing an
-      existing report — there's no way to tell automatically which side is
-      "correct" for the disputed range, so this can't be resolved without a
-      human deciding.
+    Every report this returns gets deleted and replaced by the new upload,
+    however the overlap is shaped — no partial-overlap case is rejected.
+    Overlaps aren't expected in normal use (reports are meant to cover
+    disjoint periods), but when one does happen the newest upload is always
+    treated as correct: simpler for daily-cadence uploads than asking
+    someone to manually reconcile which side of a disputed date range is
+    right, at the cost of trusting whichever file was imported most
+    recently to actually be the accurate one.
     """
     rows = conn.execute(
-        "SELECT id, period_start, period_end FROM reports "
+        "SELECT id FROM reports "
         "WHERE period_start <= ? AND period_end >= ? AND NOT (period_start = ? AND period_end = ?)",
         (
             meta.period_end.isoformat(),
@@ -309,11 +305,7 @@ def find_superseded_reports(
             meta.period_end.isoformat(),
         ),
     ).fetchall()
-    new_start = meta.period_start.isoformat()
-    new_end = meta.period_end.isoformat()
-    superseded = [r[0] for r in rows if new_start <= r[1] and new_end >= r[2]]
-    blocking = [tuple(r) for r in rows if not (new_start <= r[1] and new_end >= r[2])]
-    return superseded, blocking
+    return [r[0] for r in rows]
 
 
 def import_report(
@@ -344,18 +336,10 @@ def import_report(
         conn.execute("DELETE FROM reports WHERE id = ?", (existing_id,))
         replaced = True
 
-    superseded_ids, blocking = find_superseded_reports(conn, meta)
-    if blocking:
-        ranges = "; ".join(f"{p_start} to {p_end}" for _, p_start, p_end in blocking)
-        raise ValueError(
-            f"This period ({meta.period_start} to {meta.period_end}) partially overlaps an "
-            f"existing report without fully covering it ({ranges}) — automatically resolving "
-            "which side is correct for the overlapping dates isn't possible. Remove the "
-            "conflicting report on the Reports page first if this file is correct."
-        )
-    for report_id in superseded_ids:
+    overlapping_ids = find_overlapping_reports(conn, meta)
+    for report_id in overlapping_ids:
         # Not a raw DELETE — this may be a different source file than the
-        # superseded report's own, so its watched_files fingerprint (if any)
+        # overlapping report's own, so its watched_files fingerprint (if any)
         # needs clearing too, or a future rescan would find a report_id that
         # no longer exists.
         delete_report(conn, report_id)
@@ -394,7 +378,7 @@ def import_report(
     rows[cols].to_sql("stock_entries", conn, if_exists="append", index=False)
 
     return ImportResult(
-        report_id, meta.period_start, meta.period_end, len(df), replaced, superseded_ids
+        report_id, meta.period_start, meta.period_end, len(df), replaced, overlapping_ids
     )
 
 
@@ -409,6 +393,12 @@ def list_reports(conn: sqlite3.Connection) -> pd.DataFrame:
     )
 
 
+_ENTRIES_SELECT = (
+    "SELECT e.*, r.period_start, r.period_end, r.period_days, r.company, r.location "
+    "FROM stock_entries e JOIN reports r ON r.id = e.report_id"
+)
+
+
 def load_all_entries(conn: sqlite3.Connection) -> pd.DataFrame:
     """All stock entries across every imported report, joined with report period info.
 
@@ -417,11 +407,38 @@ def load_all_entries(conn: sqlite3.Connection) -> pd.DataFrame:
     of history pile up — and every caller (analysis.py) already filters/groups
     or does its own explicit .sort_values() on whatever subset it cares about,
     so nothing here actually depends on row order coming back from SQL.
+
+    Unbounded — scans every row of every report ever imported. Fine at
+    monthly cadence; under daily-cadence uploads this grows ~30x faster per
+    unit of calendar time, so webapp.py's cache prefers extending a
+    previously-cached frame with just the new reports (see
+    load_entries_for_reports) over calling this on every cache miss, falling
+    back to a full call here only when something was actually removed.
     """
+    return pd.read_sql(_ENTRIES_SELECT, conn, parse_dates=["period_start", "period_end"])
+
+
+def get_report_ids(conn: sqlite3.Connection) -> set[int]:
+    """Every report id currently in the database — cheap (reports stays a
+    small table even under daily cadence), used by webapp.py's cache to
+    decide whether it can extend what it already has or needs a full reload.
+    """
+    return {r[0] for r in conn.execute("SELECT id FROM reports").fetchall()}
+
+
+def load_entries_for_reports(conn: sqlite3.Connection, report_ids) -> pd.DataFrame:
+    """Same shape as load_all_entries, scoped to just the given report ids —
+    for extending an already-cached frame with only the reports that are
+    new since it was built, instead of re-fetching all of history.
+    """
+    ids = list(report_ids)
+    if not ids:
+        return pd.read_sql(f"{_ENTRIES_SELECT} WHERE 0", conn, parse_dates=["period_start", "period_end"])
+    placeholders = ",".join("?" * len(ids))
     return pd.read_sql(
-        "SELECT e.*, r.period_start, r.period_end, r.period_days, r.company, r.location "
-        "FROM stock_entries e JOIN reports r ON r.id = e.report_id",
+        f"{_ENTRIES_SELECT} WHERE e.report_id IN ({placeholders})",
         conn,
+        params=ids,
         parse_dates=["period_start", "period_end"],
     )
 

@@ -48,15 +48,18 @@ def cmd_import(args: argparse.Namespace) -> None:
                 conn, df, meta, Path(args.xls_path).name, replace=args.replace
             )
         except ValueError as e:
-            # A business-rule rejection (e.g. a partial-overlap conflict — see
-            # find_superseded_reports), not a bug: report it and exit cleanly
-            # rather than letting it propagate as an unhandled traceback.
+            # A business-rule rejection (e.g. an exact-duplicate period
+            # without --replace, or a genuinely unparseable file), not a
+            # bug: report it and exit cleanly rather than letting it
+            # propagate as an unhandled traceback. Overlapping periods no
+            # longer raise here — see find_overlapping_reports — so this is
+            # narrower than it used to be.
             print(f"Not imported: {e}")
             return
     verb = "Replaced" if result.replaced else "Imported"
     if result.superseded_report_ids:
         print(
-            f"(also replaced {len(result.superseded_report_ids)} earlier report(s) it fully overlapped)"
+            f"(also replaced {len(result.superseded_report_ids)} earlier report(s) it overlapped)"
         )
     print(
         f"{verb} report for {result.period_start} to {result.period_end}: "

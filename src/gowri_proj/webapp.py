@@ -148,6 +148,19 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
         single request, so a route handler and the company-name context
         processor rendering the same page share one lookup instead of each
         paying for their own.
+
+        The data half of that cache (all_entries) is the expensive part —
+        db.load_all_entries scans every row of every report ever imported.
+        Under monthly-cadence uploads that's cheap enough not to matter, but
+        under daily-cadence uploads it's ~30x more rows for the same
+        calendar span, and it was being fully re-read on *every* cache miss,
+        including a miss caused by nothing more than a Settings save. When
+        the only thing that changed since the last load is which reports
+        exist, and every previously-cached report is still there (the normal
+        case — a new day's file lands, nothing was removed), this extends
+        the cached frame with just the new reports' rows instead of
+        re-reading all of history. Anything else (first load, or a report
+        actually removed/superseded) falls back to a full reload.
         """
         if "current_data" in g:
             return g.current_data
@@ -156,22 +169,51 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
             # replace apart from no change at all, and imported_at is only
             # second-resolution — MAX(id) is monotonic (SQLite AUTOINCREMENT
             # never reuses ids) so it catches replacements the other two miss.
-            # settings.version is folded in too — saving new thresholds from
-            # the Settings page has to invalidate this cache immediately, not
-            # wait for the next import.
-            fingerprint = conn.execute(
+            # settings.version is tracked separately (not folded into one
+            # combined fingerprint) so a settings-only save can invalidate
+            # the summary without forcing all_entries to be re-read too.
+            row = conn.execute(
                 "SELECT (SELECT COUNT(*) FROM reports), (SELECT COALESCE(MAX(id), 0) FROM reports), "
                 "(SELECT COALESCE(MAX(imported_at), '') FROM reports), "
                 "(SELECT COALESCE(version, 0) FROM settings WHERE id = 1)"
             ).fetchone()
+            data_fingerprint, settings_version = row[:3], row[3]
             cache = app.config["_SUMMARY_CACHE"]
-            if cache and cache[0] == fingerprint:
-                result = cache[1], cache[2], cache[3]
-            elif not db.has_data(conn):
-                app.config["_SUMMARY_CACHE"] = (fingerprint, None, None, None)
-                result = None, None, None
+
+            if not db.has_data(conn):
+                app.config["_SUMMARY_CACHE"] = {
+                    "data_fingerprint": data_fingerprint,
+                    "report_ids": frozenset(),
+                    "all_entries": None,
+                    "settings_version": settings_version,
+                    "summary": None,
+                    "settings": None,
+                }
+                g.current_data = result = None, None, None
+                return result
+
+            if cache and cache["data_fingerprint"] == data_fingerprint:
+                all_entries = cache["all_entries"]
+                report_ids = cache["report_ids"]
+                data_changed = False
             else:
-                all_entries = db.load_all_entries(conn)
+                current_ids = db.get_report_ids(conn)
+                if (
+                    cache
+                    and cache["all_entries"] is not None
+                    and cache["report_ids"] < current_ids  # a strict subset: pure addition
+                ):
+                    new_rows = db.load_entries_for_reports(conn, current_ids - cache["report_ids"])
+                    all_entries = pd.concat([cache["all_entries"], new_rows], ignore_index=True)
+                else:
+                    all_entries = db.load_all_entries(conn)
+                report_ids = current_ids
+                data_changed = True
+
+            if not data_changed and cache and cache["settings_version"] == settings_version:
+                summary = cache["summary"]
+                settings = cache["settings"]
+            else:
                 settings = db.get_settings(conn)
                 summary = summarize_history(
                     all_entries,
@@ -182,8 +224,16 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
                     value_tier_a_pct=settings["value_tier_a_pct"],
                     value_tier_b_pct=settings["value_tier_b_pct"],
                 )
-                app.config["_SUMMARY_CACHE"] = (fingerprint, all_entries, summary, settings)
-                result = all_entries, summary, settings
+
+            app.config["_SUMMARY_CACHE"] = {
+                "data_fingerprint": data_fingerprint,
+                "report_ids": report_ids,
+                "all_entries": all_entries,
+                "settings_version": settings_version,
+                "summary": summary,
+                "settings": settings,
+            }
+            result = all_entries, summary, settings
         g.current_data = result
         return result
 
@@ -492,20 +542,11 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
                         f"under a different filename."
                     ), 409
 
-                # A partial-overlap conflict (distinct from the exact-match
-                # checks above) has to be caught here too, before the file
-                # becomes real — import_report would still catch it, but by
-                # then os.replace below would have already happened.
-                _, blocking = db.find_superseded_reports(conn, meta)
-                if blocking:
-                    ranges = "; ".join(f"{p_start} to {p_end}" for _, p_start, p_end in blocking)
-                    return jsonify(
-                        error=f"This period ({meta.period_start} to {meta.period_end}) partially overlaps an "
-                        f"existing report without fully covering it ({ranges}). Remove the conflicting report "
-                        "on the Reports page first if this file is correct."
-                    ), 409
-
-                # Validated — now it's safe to make this the real file.
+                # Validated — now it's safe to make this the real file. Any
+                # overlap with an existing report (not just exact-period or
+                # reused-filename, both already checked above) is resolved
+                # by import_report itself, deleting the old overlapping
+                # report(s) — the newest upload always wins.
                 dest = uploads_dir / rel_name
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(tmp_path, dest)

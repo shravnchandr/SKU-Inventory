@@ -1,20 +1,12 @@
 """db.import_report's handling of overlapping report periods.
 
 Exact-period duplicates were already blocked (unless replace=True). This
-covers the two new cases for a *partial* overlap between a new upload and
-an already-imported report:
-
-- superseded: the new upload's range reaches at least as far as an existing
-  overlapping report's — e.g. a progressively re-exported "first week" ->
-  "first two weeks" -> full month, which the user described as their normal
-  workflow. Auto-resolved: the older, now-redundant report is deleted and
-  replaced.
-- blocking: a partial overlap where the new upload does *not* reach as far
-  as an existing report already does — there's no automatic way to decide
-  which side is right for the disputed dates, so the whole import is
-  rejected with a clear message instead of silently corrupting sales-pace/
-  days-of-cover math (summing each report's full period_days and full sales
-  assumes reports never overlap).
+covers *partial* overlap between a new upload and an already-imported
+report: any overlap, however it's shaped, deletes the old overlapping
+report(s) and lets the new upload win — no rejection case. Overlaps aren't
+expected in normal use (reports are meant to cover disjoint periods), but
+per the user's explicit call, when one does happen the newest upload is
+just trusted to be correct rather than blocking on it.
 """
 
 from datetime import date
@@ -55,7 +47,7 @@ def _df(*skus):
     return pd.DataFrame(rows, columns=TIDY_COLUMNS)
 
 
-def test_a_wider_upload_supersedes_a_narrower_overlapping_report(tmp_path):
+def test_a_wider_upload_replaces_a_narrower_overlapping_report(tmp_path):
     with db.connect(str(tmp_path / "test.db")) as conn:
         week1 = db.import_report(conn, _df("A"), _meta("2026-06-01", "2026-06-07"), "week1.xlsx")
         result = db.import_report(
@@ -71,8 +63,8 @@ def test_a_wider_upload_supersedes_a_narrower_overlapping_report(tmp_path):
     assert result.sku_count == 2
 
 
-def test_superseding_clears_the_old_reports_watched_file_fingerprint(tmp_path):
-    # A different source filename than the superseded report's own — its
+def test_replacing_clears_the_old_reports_watched_file_fingerprint(tmp_path):
+    # A different source filename than the replaced report's own — its
     # watched_files row (if any) has to be cleaned up too, or it would point
     # at a report_id that no longer exists.
     with db.connect(str(tmp_path / "test.db")) as conn:
@@ -85,35 +77,37 @@ def test_superseding_clears_the_old_reports_watched_file_fingerprint(tmp_path):
     assert watched is None
 
 
-def test_a_narrower_upload_that_does_not_reach_an_existing_reports_end_is_blocked(tmp_path):
+def test_a_narrower_upload_that_does_not_reach_an_existing_reports_end_still_replaces_it(tmp_path):
+    # A partial overlap that doesn't fully cover the old report — no longer
+    # rejected. The new upload is trusted; the old report is gone.
     with db.connect(str(tmp_path / "test.db")) as conn:
-        db.import_report(conn, _df("A", "B"), _meta("2026-06-01", "2026-06-30"), "june.xlsx")
+        june = db.import_report(conn, _df("A", "B"), _meta("2026-06-01", "2026-06-30"), "june.xlsx")
 
-        with pytest.raises(ValueError, match="partially overlaps"):
-            db.import_report(conn, _df("A"), _meta("2026-06-10", "2026-06-20"), "mid_june.xlsx")
+        result = db.import_report(conn, _df("A"), _meta("2026-06-10", "2026-06-20"), "mid_june.xlsx")
 
         reports = db.list_reports(conn)
-    # Nothing changed — the conflicting upload never landed.
-    assert len(reports) == 1
-    assert reports.iloc[0]["source_filename"] == "june.xlsx"
+
+    assert result.superseded_report_ids == [june.report_id]
+    assert list(reports["id"]) == [result.report_id]
+    assert reports.iloc[0]["source_filename"] == "mid_june.xlsx"
 
 
-def test_an_upload_that_starts_later_than_an_existing_report_does_not_supersede_it(tmp_path):
-    # Existing 2026-06-01..06-30; new upload 2026-06-15..07-15 ends later
-    # but *starts* after the old report already did — reaching only as far
-    # as the old report's end isn't supersession, since days 1-14 would be
-    # silently lost if the old report were deleted. Must block instead.
+def test_an_upload_that_starts_later_than_an_existing_report_still_replaces_it(tmp_path):
+    # Existing 2026-06-01..06-30; new upload 2026-06-15..07-15 starts after
+    # the old report already did — not a clean supersession by containment,
+    # but still just replaces the old report per the "newest wins" policy.
     with db.connect(str(tmp_path / "test.db")) as conn:
-        db.import_report(conn, _df("A"), _meta("2026-06-01", "2026-06-30"), "june.xlsx")
+        june = db.import_report(conn, _df("A"), _meta("2026-06-01", "2026-06-30"), "june.xlsx")
 
-        with pytest.raises(ValueError, match="partially overlaps"):
-            db.import_report(
-                conn, _df("A"), _meta("2026-06-15", "2026-07-15"), "mid_june_to_mid_july.xlsx"
-            )
+        result = db.import_report(
+            conn, _df("A"), _meta("2026-06-15", "2026-07-15"), "mid_june_to_mid_july.xlsx"
+        )
 
         reports = db.list_reports(conn)
-    assert len(reports) == 1
-    assert reports.iloc[0]["source_filename"] == "june.xlsx"
+
+    assert result.superseded_report_ids == [june.report_id]
+    assert list(reports["id"]) == [result.report_id]
+    assert reports.iloc[0]["source_filename"] == "mid_june_to_mid_july.xlsx"
 
 
 def test_non_overlapping_reports_import_normally(tmp_path):
@@ -141,9 +135,16 @@ def test_exact_duplicate_period_still_requires_replace_and_is_unaffected_by_over
     assert len(reports) == 1
 
 
-def test_find_superseded_reports_excludes_the_exact_match(tmp_path):
+def test_find_overlapping_reports_excludes_the_exact_match(tmp_path):
     with db.connect(str(tmp_path / "test.db")) as conn:
         db.import_report(conn, _df("A"), _meta("2026-06-01", "2026-06-30"), "june.xlsx")
-        superseded, blocking = db.find_superseded_reports(conn, _meta("2026-06-01", "2026-06-30"))
-    assert superseded == []
-    assert blocking == []
+        overlapping = db.find_overlapping_reports(conn, _meta("2026-06-01", "2026-06-30"))
+    assert overlapping == []
+
+
+def test_find_overlapping_reports_returns_multiple_overlapping_ids(tmp_path):
+    with db.connect(str(tmp_path / "test.db")) as conn:
+        a = db.import_report(conn, _df("A"), _meta("2026-06-01", "2026-06-10"), "a.xlsx")
+        b = db.import_report(conn, _df("B"), _meta("2026-06-20", "2026-06-30"), "b.xlsx")
+        overlapping = db.find_overlapping_reports(conn, _meta("2026-06-05", "2026-06-25"))
+    assert sorted(overlapping) == sorted([a.report_id, b.report_id])
