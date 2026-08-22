@@ -148,3 +148,54 @@ def test_find_overlapping_reports_returns_multiple_overlapping_ids(tmp_path):
         b = db.import_report(conn, _df("B"), _meta("2026-06-20", "2026-06-30"), "b.xlsx")
         overlapping = db.find_overlapping_reports(conn, _meta("2026-06-05", "2026-06-25"))
     assert sorted(overlapping) == sorted([a.report_id, b.report_id])
+
+
+def test_reused_filename_with_an_overlapping_period_is_not_a_conflict(tmp_path):
+    # The daily-cadence shape: the same source file re-exported under the
+    # same filename, its date range simply grown to include more recent
+    # days (e.g. Aug 1-17, then a few days later Aug 1-21). This must not
+    # require removing the old report by hand — it's meant to fall through
+    # to import_report's own overlap auto-replace.
+    with db.connect(str(tmp_path / "test.db")) as conn:
+        report = db.import_report(
+            conn, _df("A"), _meta("2026-08-01", "2026-08-17"), "export.xlsx"
+        )
+        db.upsert_watched_file(conn, "export.xlsx", 100, 1000, report.report_id, "imported")
+
+        known = db.get_watched_file(conn, "export.xlsx")
+        conflict = db.find_reused_filename_conflict(
+            conn, known, _meta("2026-08-01", "2026-08-21")
+        )
+    assert conflict is None
+
+
+def test_reused_filename_with_an_unrelated_period_is_still_a_conflict(tmp_path):
+    # A filename reused for a period that has nothing to do with the old
+    # one (e.g. a wrong file saved over an old export) — overlap can't
+    # distinguish this from a mistake, so it's still blocked.
+    with db.connect(str(tmp_path / "test.db")) as conn:
+        report = db.import_report(
+            conn, _df("A"), _meta("2026-06-01", "2026-06-30"), "export.xlsx"
+        )
+        db.upsert_watched_file(conn, "export.xlsx", 100, 1000, report.report_id, "imported")
+
+        known = db.get_watched_file(conn, "export.xlsx")
+        conflict = db.find_reused_filename_conflict(
+            conn, known, _meta("2026-08-01", "2026-08-21")
+        )
+    assert conflict is not None
+    assert conflict["id"] == report.report_id
+
+
+def test_reused_filename_with_the_same_period_is_not_a_conflict(tmp_path):
+    with db.connect(str(tmp_path / "test.db")) as conn:
+        report = db.import_report(
+            conn, _df("A"), _meta("2026-06-01", "2026-06-30"), "export.xlsx"
+        )
+        db.upsert_watched_file(conn, "export.xlsx", 100, 1000, report.report_id, "imported")
+
+        known = db.get_watched_file(conn, "export.xlsx")
+        conflict = db.find_reused_filename_conflict(
+            conn, known, _meta("2026-06-01", "2026-06-30")
+        )
+    assert conflict is None

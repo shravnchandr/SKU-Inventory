@@ -256,6 +256,17 @@ def find_reused_filename_conflict(
     conflict. Shared by sync.py's folder scan and webapp.py's direct
     upload — both need this same check, they just handle a real conflict
     differently (log-and-skip vs. an immediate HTTP error).
+
+    A period that *overlaps* the old one (rather than being unrelated to it)
+    isn't treated as a conflict here, even though it's still technically a
+    different period — that's the normal daily-cadence shape (the same
+    source file re-exported under the same filename, its date range simply
+    grown to include more recent days, e.g. Aug 1-17 then Aug 1-21). Blocking
+    that would defeat find_overlapping_reports/import_report's own
+    auto-replace handling for exactly that case. This check exists for the
+    other case: a filename reused for a genuinely unrelated period (e.g. a
+    wrong file saved over an old one), which overlap can't distinguish from
+    on its own.
     """
     if known is None or known["report_id"] is None:
         return None
@@ -263,11 +274,17 @@ def find_reused_filename_conflict(
     if old_report is None:
         return None
     if (
-        old_report["period_start"] != meta.period_start.isoformat()
-        or old_report["period_end"] != meta.period_end.isoformat()
+        old_report["period_start"] == meta.period_start.isoformat()
+        and old_report["period_end"] == meta.period_end.isoformat()
     ):
-        return old_report
-    return None
+        return None
+    overlaps = (
+        old_report["period_start"] <= meta.period_end.isoformat()
+        and old_report["period_end"] >= meta.period_start.isoformat()
+    )
+    if overlaps:
+        return None
+    return old_report
 
 
 def delete_report(conn: sqlite3.Connection, report_id: int) -> bool:
