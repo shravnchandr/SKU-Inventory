@@ -500,6 +500,39 @@ def test_import_item_catalog_logs_nothing_for_a_brand_new_code(tmp_path):
     assert alias_map == {}
 
 
+def test_import_item_catalog_tolerates_a_blank_long_name(tmp_path):
+    # long_name is optional — a blank cell comes through from parse_item_list
+    # as float NaN, not None (both freshly parsed and after a DB round trip,
+    # depending on pandas' dtype inference for that column). A plain
+    # truthiness check doesn't catch it (bool(float('nan')) is True in
+    # Python), so a naive guard would treat a blank long_name as a real
+    # value, log a bogus "rename" to/from NaN, and crash on
+    # item_name_changes' NOT NULL columns. Re-importing an unchanged catalog
+    # (even one with blank long_names) must be a no-op, not a crash.
+    with db.connect(str(tmp_path / "test.db")) as conn:
+        db.import_item_catalog(
+            conn, _catalog_df([_catalog_row("C1", "XYZ 10G", float("nan"))])
+        )
+        count = db.import_item_catalog(
+            conn, _catalog_df([_catalog_row("C1", "XYZ 10G", float("nan"))])
+        )
+        alias_map = db.get_name_change_map(conn)
+    assert count == 1
+    assert alias_map == {}
+
+
+def test_import_item_catalog_logs_a_long_name_appearing_where_it_was_blank(tmp_path):
+    # A code that had no long_name before and now has one isn't a "rename"
+    # (there's no old name to pair it against) — nothing should be logged.
+    with db.connect(str(tmp_path / "test.db")) as conn:
+        db.import_item_catalog(
+            conn, _catalog_df([_catalog_row("C1", "XYZ 10G", float("nan"))])
+        )
+        db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "XYZ 10G", "XYZ 10G TUBE")]))
+        alias_map = db.get_name_change_map(conn)
+    assert alias_map == {}
+
+
 def test_import_item_catalog_replaces_the_whole_table(tmp_path):
     with db.connect(str(tmp_path / "test.db")) as conn:
         db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "A", "A LONG")]))

@@ -586,16 +586,33 @@ def import_item_catalog(conn: sqlite3.Connection, df: pd.DataFrame) -> int:
 
     count = _replace_item_catalog_table(conn, df)
 
+    # `long_name` is optional — a blank cell comes through as float NaN, not
+    # None (both straight from a freshly parsed .xlsx and after a round trip
+    # through the DB, depending on pandas' dtype inference). A plain
+    # truthiness check doesn't catch that: bool(float('nan')) is True in
+    # Python, so a blank slips through as if it were a real name and ends up
+    # in item_name_changes, whose old_name/new_name are NOT NULL — the NaN
+    # becomes a real SQL NULL the moment it's bound as a query parameter,
+    # and the insert blows up. isinstance(..., str) is the actual "is this a
+    # real name" check; a non-empty one at that, since parser.py can also
+    # hand back "" for a genuinely blank text cell.
+    def _real_name(value: object) -> str | None:
+        return value if isinstance(value, str) and value else None
+
     changes = []
     for row in df.itertuples(index=False):
         prev = prev_names.get(row.code)
         if prev is None:
             continue
         old_product, old_long = prev
-        if old_product and row.product_name and old_product != row.product_name:
-            changes.append((row.code, old_product, row.product_name))
-        if old_long and row.long_name and old_long != row.long_name and old_long != old_product:
-            changes.append((row.code, old_long, row.long_name))
+        old_product = _real_name(old_product)
+        old_long = _real_name(old_long)
+        new_product = _real_name(row.product_name)
+        new_long = _real_name(row.long_name)
+        if old_product and new_product and old_product != new_product:
+            changes.append((row.code, old_product, new_product))
+        if old_long and new_long and old_long != new_long and old_long != old_product:
+            changes.append((row.code, old_long, new_long))
     if changes:
         conn.executemany(
             "INSERT INTO item_name_changes (code, old_name, new_name) VALUES (?, ?, ?)",
