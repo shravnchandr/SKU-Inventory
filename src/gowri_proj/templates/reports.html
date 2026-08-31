@@ -315,8 +315,41 @@ async function loadImportHealth() {
         if (churn.renames_total) {
           rows.push(`<div class="health-row" style="color:var(--text-muted)"><span class="icon">·</span> ${churn.renames_total} other name change${churn.renames_total === 1 ? '' : 's'} confirmed as the same item via your item list — not counted above.</div>`);
         }
+        const churnRows = [
+          ...churn.new_skus.map(r => ({ ...r, change: 'New' })),
+          ...churn.vanished_skus.map(r => ({ ...r, change: 'Vanished' })),
+        ];
+        const churnTotal = churn.new_total + churn.vanished_total;
+        const churnShownNote = churnRows.length < churnTotal
+          ? ` (showing the top ${churnRows.length.toLocaleString('en-IN')} by value, all ${churnTotal.toLocaleString('en-IN')})`
+          : '';
+        rows.push(`
+          <details class="card-collapsible" id="card-sku-changes">
+            <summary>
+              <span style="font-weight:600;font-size:var(--text-base)">New &amp; vanished SKUs</span>
+              <span class="disclosure-icon" aria-hidden="true">▸</span>
+            </summary>
+            <div class="card-collapsible-body">
+              <div style="text-align:right;margin-bottom:8px">
+                <a class="btn btn-sm" href="/api/sku-churn/export" download>⭳ Export CSV${churnShownNote}</a>
+              </div>
+              <table class="unmatched-skus" style="width:100%">
+                <thead><tr><th>Change</th><th>Brand</th><th>SKU</th><th class="num">Closing stock</th><th class="num">Value</th></tr></thead>
+                <tbody>${churnRows.map(r => `
+                  <tr>
+                    <td>${r.change}</td>
+                    <td>${escapeHtml(r.brand || '–')}</td>
+                    <td>${escapeHtml(r.sku)}</td>
+                    <td class="num">${r.closing_stock.toLocaleString('en-IN')}</td>
+                    <td class="num">₹${r.value.toLocaleString('en-IN')}</td>
+                  </tr>`).join('')}
+                </tbody>
+              </table>
+            </div>
+          </details>`);
       }
       churnEl.innerHTML = rows.join('');
+      if (hasChurn) initCollapsibles();
       document.getElementById('jump-to-catalog')?.addEventListener('click', (ev) => {
         ev.preventDefault();
         const details = document.getElementById('card-item-catalog');
@@ -403,6 +436,9 @@ function renderCatalogCard(catalog, unmatched) {
         <span class="disclosure-icon" aria-hidden="true">▸</span>
       </summary>
       <div class="card-collapsible-body">
+        <div style="text-align:right;margin-bottom:8px">
+          <a class="btn btn-sm" href="/api/unmatched-skus/export" download>⭳ Export CSV${shownNote ? ` (all ${total.toLocaleString('en-IN')})` : ''}</a>
+        </div>
         <table class="unmatched-skus" style="width:100%">
           <thead><tr><th>Brand</th><th>SKU</th><th class="num">Closing stock</th><th class="num">Value</th></tr></thead>
           <tbody>${items.map(u => `

@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 import pandas as pd
-from flask import Flask, abort, g, jsonify, redirect, render_template, request, url_for
+from flask import Flask, Response, abort, g, jsonify, redirect, render_template, request, url_for
 from werkzeug.datastructures import FileStorage
 from werkzeug.utils import secure_filename
 
@@ -124,6 +124,36 @@ def _serialize_reports(reports_df: pd.DataFrame) -> list[dict]:
             }
         )
     return out
+
+
+def _csv_response(rows: list[dict], columns: list[tuple[str, str]], filename: str) -> Response:
+    """A downloadable CSV attachment from a list of dicts. Used for the
+    "download the full list" links on Reports — those need every row, not
+    just the display-capped subset /api/import-health returns to keep the
+    page itself light, so they're built here from an uncapped query rather
+    than by exporting whatever the page happens to have already fetched
+    (the client-side exportCsv in dashboard.html, which works from a page
+    that already loaded everything up front).
+
+    The BOM prefix matches dashboard.html's own exportCsv — without it,
+    Excel guesses the wrong encoding for anything outside plain ASCII.
+    """
+    lines = [",".join(csv_cell(label) for _, label in columns)]
+    for row in rows:
+        lines.append(",".join(csv_cell(row.get(key, "")) for key, _ in columns))
+    csv_text = "﻿" + "\r\n".join(lines)
+    return Response(
+        csv_text,
+        mimetype="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def csv_cell(value: object) -> str:
+    s = "" if value is None else str(value)
+    if any(c in s for c in ('"', ",", "\n")):
+        s = '"' + s.replace('"', '""') + '"'
+    return s
 
 
 def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOADS_DIR) -> Flask:
@@ -448,6 +478,53 @@ def create_app(db_path: str = DEFAULT_DB_PATH, uploads_dir: str = DEFAULT_UPLOAD
             # as unmatched_skus's display limit; "total" still reflects the
             # true count so the headline can't understate the problem.
             quality_issues={"total": len(quality_issues), "items": quality_issues[:100]},
+        )
+
+    @app.get("/api/unmatched-skus/export")
+    def api_unmatched_skus_export():
+        with db.connect(app.config["DB_PATH"]) as conn:
+            catalog_meta = db.get_item_catalog_meta(conn)
+            catalog_names = db.list_item_catalog_names(conn) if catalog_meta else set()
+        _, summary, _ = get_current_data()
+        unmatched = (
+            find_unmatched_skus(summary.enriched, catalog_names, limit=len(summary.enriched))
+            if catalog_names and summary is not None
+            else {"items": []}
+        )
+        return _csv_response(
+            unmatched["items"],
+            [
+                ("brand", "Brand"),
+                ("sku", "SKU"),
+                ("closing_stock", "Closing stock"),
+                ("value", "Value"),
+            ],
+            "unmatched_skus.csv",
+        )
+
+    @app.get("/api/sku-churn/export")
+    def api_sku_churn_export():
+        with db.connect(app.config["DB_PATH"]) as conn:
+            alias_map = db.get_name_change_map(conn)
+        all_entries, _, _ = get_current_data()
+        churn = (
+            find_sku_churn(all_entries, alias_map, limit=len(all_entries))
+            if all_entries is not None and not all_entries.empty
+            else {"new_skus": [], "vanished_skus": []}
+        )
+        rows = [{"change": "New", **r} for r in churn["new_skus"]] + [
+            {"change": "Vanished", **r} for r in churn["vanished_skus"]
+        ]
+        return _csv_response(
+            rows,
+            [
+                ("change", "Change"),
+                ("brand", "Brand"),
+                ("sku", "SKU"),
+                ("closing_stock", "Closing stock"),
+                ("value", "Value"),
+            ],
+            "sku_changes.csv",
         )
 
     @app.get("/settings")
