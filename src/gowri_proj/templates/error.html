@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}Something went wrong{% endblock %}
+
+{% block content %}
+  <div class="page-head">
+    <div>
+      <h1>Something went wrong</h1>
+      <div class="sub">This page couldn't load.</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <p>{{ message }}</p>
+    <p><a href="{{ url_for('dashboard') }}">Back to the dashboard</a></p>
+  </div>
+{% endblock %}

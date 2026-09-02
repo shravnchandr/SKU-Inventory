@@ -13,6 +13,7 @@ wheels/
 db/
 output/
 uploads/
+logs/
 *.xls
 *.xlsx
 *.csv

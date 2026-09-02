@@ -68,9 +68,54 @@ TIDY_COLUMNS = [
 ]
 
 
+def _read_excel_safely(path: str, **kwargs) -> pd.DataFrame:
+    """pd.read_excel, with a corrupt/wrong-format/partially-saved file turned
+    into one plain message instead of whatever raw engine error leaks
+    through. The two engines this app uses — xlrd for .xls, openpyxl for
+    .xlsx — raise very different, very technical exceptions for "this isn't
+    a valid Excel file": CompDocError ("'Book' stream length (1721161
+    bytes) > file data size (578328 bytes)") for a truncated .xls,
+    BadZipFile for a mangled .xlsx, a bare ValueError ("you must specify an
+    engine manually") when the format can't even be detected. None of that
+    means anything to someone who uploaded the wrong file, or whose POS
+    software's export got cut off mid-save/mid-download — and it's a real
+    risk here specifically: this pharmacy's own genuine exports already
+    trigger xlrd "OLE2 inconsistency" warnings (tolerated, not fatal) on
+    every file, so they're already close to whatever line separates
+    "readable with a warning" from "CompDocError."
+    """
+    try:
+        return pd.read_excel(path, **kwargs)
+    except Exception as e:
+        # Deliberately broad: turning *any* read failure, regardless of
+        # which engine or exception type raised it, into one plain message.
+        raise ValueError(
+            "Couldn't open this file as an Excel spreadsheet "
+            f"({e.__class__.__name__}: {e}). It may be the wrong kind of file, corrupted, or "
+            "only partially saved or downloaded — try re-exporting it and uploading again."
+        ) from e
+
+
 def load_raw(path: str) -> pd.DataFrame:
     """Read the .xls report as a headerless grid of raw cells."""
-    return pd.read_excel(path, header=None)
+    return _read_excel_safely(path, header=None)
+
+
+def _require_min_columns(raw: pd.DataFrame, min_columns: int, kind: str) -> None:
+    """Fail fast, in plain English, when the sheet has fewer columns than
+    this format ever reads by fixed position — both parse_stock_statement
+    and parse_item_list index columns by trusted fixed position (COL_VALUE,
+    IL_COL_LONG_NAME, etc.), so without this check the wrong kind of file
+    (or a re-saved copy missing trailing columns) fails with a bare
+    ``KeyError: 14`` the moment the row loop reaches a column that isn't
+    there — technically accurate, meaningless to whoever's looking at it.
+    """
+    if raw.shape[1] < min_columns:
+        raise ValueError(
+            f"This file only has {raw.shape[1]} column(s), but a {kind} export needs at least "
+            f"{min_columns}. It may be the wrong kind of file, or a copy that's missing columns — "
+            "check it against a known-good export before re-uploading."
+        )
 
 
 _PERIOD_RE = re.compile(r"Stock Statement from (\d{2}/\w{3}/\d{4}) to (\d{2}/\w{3}/\d{4})")
@@ -167,7 +212,8 @@ def parse_item_list(path: str, sheet_name: str = "Sheet2") -> tuple[pd.DataFrame
     the system, which is what lets renamed/re-labeled SKUs in the monthly stock
     statements be flagged rather than silently mismatched.
     """
-    raw = pd.read_excel(path, sheet_name=sheet_name, header=None)
+    raw = _read_excel_safely(path, sheet_name=sheet_name, header=None)
+    _require_min_columns(raw, IL_COL_LONG_NAME + 1, "item list")
     meta = parse_item_list_meta(raw)
 
     rows: list[dict] = []
@@ -241,6 +287,7 @@ def parse_item_list(path: str, sheet_name: str = "Sheet2") -> tuple[pd.DataFrame
 def parse_stock_statement(path: str) -> tuple[pd.DataFrame, ReportMeta]:
     """Parse the raw report into a tidy, one-row-per-SKU DataFrame plus metadata."""
     raw = load_raw(path)
+    _require_min_columns(raw, COL_VALUE + 1, "stock statement")
     meta = parse_meta(raw)
 
     rows: list[dict] = []
