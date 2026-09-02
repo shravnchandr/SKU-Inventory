@@ -10,12 +10,13 @@ as an unhandled 500 with no explanation.
 """
 
 import io
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import openpyxl
 import pytest
 
-from src.gowri_proj.webapp import _replace_with_retry, create_app
+from src.gowri_proj.webapp import _replace_with_retry, _staged_upload, create_app
 
 HEADER_ROW = [
     "Item", None, None, None, None,
@@ -102,3 +103,31 @@ def test_upload_endpoint_surfaces_a_clean_message_instead_of_a_bare_500(tmp_path
     assert resp.status_code == 500
     body = resp.get_json()
     assert "antivirus" in body["error"].lower() or "locked" in body["error"].lower()
+
+
+def test_staged_upload_cleanup_failure_does_not_override_the_caller_response(tmp_path):
+    """_staged_upload always unlinks the temp file in `finally` — if the
+    same lock that made a caller's _replace_with_retry give up also blocks
+    *that* unlink, an exception raised there would silently override
+    whatever specific response the caller was already returning from
+    inside the `with` block (confirmed by hand: raising from a
+    @contextmanager's finally during __exit__ replaces a return already
+    pending in the calling scope). The fix must swallow a failed cleanup so
+    the caller's own return value survives.
+    """
+    file = MagicMock()
+    file.save = lambda f: f.write(b"data")
+
+    real_unlink = Path.unlink
+
+    def flaky_unlink(self, *args, **kwargs):
+        if self.name.startswith(".upload-"):
+            raise PermissionError(5, "Access is denied")
+        return real_unlink(self, *args, **kwargs)
+
+    def caller():
+        with _staged_upload(file, "report.xls", tmp_path):
+            return "the caller's specific error message"
+
+    with patch.object(Path, "unlink", flaky_unlink):
+        assert caller() == "the caller's specific error message"

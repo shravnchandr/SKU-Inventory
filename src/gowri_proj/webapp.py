@@ -143,7 +143,21 @@ def _staged_upload(file: FileStorage, filename: str, uploads_dir: Path):
             file.save(f)
         yield tmp_path
     finally:
-        tmp_path.unlink(missing_ok=True)  # no-op if os.replace already moved it into place
+        try:
+            tmp_path.unlink(missing_ok=True)  # no-op if os.replace already moved it into place
+        except OSError:
+            # If something still has this temp file locked — the same
+            # reason a caller's _replace_with_retry may have just given up
+            # and returned its clear, specific error — don't let a failed
+            # *cleanup* raise here and clobber that response in flight with
+            # a bare, generic one instead (confirmed: an exception raised
+            # from a @contextmanager's finally during __exit__ replaces a
+            # return already pending inside the `with` block). It's a
+            # dotfile (sync.py's _is_candidate skips anything starting with
+            # "." or "~$"), so leaving it behind doesn't get picked up as a
+            # report — just cleaned up by hand, or the next time this path
+            # isn't locked.
+            pass
 
 
 def _replace_with_retry(src: Path, dest: Path, attempts: int = 5, delay: float = 0.4) -> None:
