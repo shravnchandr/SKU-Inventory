@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+from src.gowri_proj.update_check import _run_git as run_git
 from src.gowri_proj.update_check import check_for_update
 
 
@@ -100,3 +101,16 @@ def test_a_hung_git_call_times_out_instead_of_hanging_the_check(tmp_path):
         "subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="git", timeout=15)
     ):
         assert check_for_update(local) is None
+
+
+def test_every_git_call_disables_interactive_credential_prompts(tmp_path):
+    # Never let a fetch that needs auth it doesn't have pop up a
+    # terminal/GUI credential prompt — it should fail cleanly (same as any
+    # other unreachable-remote case) instead of hanging on a dialog no one
+    # asked for.
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = ""
+        run_git(tmp_path, "status", timeout=5)
+    _args, kwargs = mock_run.call_args
+    assert kwargs["env"]["GIT_TERMINAL_PROMPT"] == "0"
