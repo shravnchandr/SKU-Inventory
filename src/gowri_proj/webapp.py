@@ -182,7 +182,7 @@ def _staged_upload(file: FileStorage, filename: str, uploads_dir: Path):
             pass
 
 
-def _retry_transient_lock(fn, *, attempts: int = 5, delay: float = 0.4):
+def _retry_transient_lock(fn, *, attempts: int = 10, delay: float = 0.75):
     """Call fn(), retrying briefly on a transient PermissionError before
     giving up and letting it raise.
 
@@ -190,14 +190,20 @@ def _retry_transient_lock(fn, *, attempts: int = 5, delay: float = 0.4):
     refuses some filesystem operations — replacing a file, occasionally even
     just stat'ing one — while another process momentarily has it locked.
     Most commonly that's antivirus real-time scanning grabbing a
-    just-written file for a moment. That's normally over in well under a
-    second; a few retries with a short pause clears it without anyone
-    noticing. Used for the filesystem calls in the upload path that have
-    actually hit this live (os.replace) or sit right next to it (stat'ing
-    the same file immediately after) — not for calls that aren't
-    meaningfully exposed to it, like writing a brand-new uniquely-named temp
-    file (nothing else has ever had a handle on it) or creating a directory
-    (not the kind of thing a scanner holds a lock on).
+    just-written file for a moment, usually over in well under a second —
+    but reproduced live with the original ~2s retry budget (5 attempts,
+    0.4s apart) still not being enough on a real machine, so this is
+    ~6.75s now (10 attempts, 0.75s apart): still bounded — a genuinely
+    stuck lock (the file actually open in Excel, or in an Explorer preview
+    pane, which do NOT clear on their own) fails in a few seconds rather
+    than hanging the request, but with real headroom for a slower scan
+    rather than assuming under a second is always enough. Used for the
+    filesystem calls in the upload path that have actually hit this live
+    (os.replace) or sit right next to it (stat'ing the same file
+    immediately after) — not for calls that aren't meaningfully exposed to
+    it, like writing a brand-new uniquely-named temp file (nothing else has
+    ever had a handle on it) or creating a directory (not the kind of thing
+    a scanner holds a lock on).
     """
     if attempts < 1:
         # attempts=0 would skip the loop entirely, leaving last_error at
@@ -218,26 +224,31 @@ def _retry_transient_lock(fn, *, attempts: int = 5, delay: float = 0.4):
     raise last_error
 
 
-def _replace_with_retry(src: Path, dest: Path, attempts: int = 5, delay: float = 0.4) -> None:
+def _replace_with_retry(src: Path, dest: Path, attempts: int = 10, delay: float = 0.75) -> None:
     """os.replace, retrying briefly on a transient PermissionError (see
     _retry_transient_lock) before raising a plain message instead of a bare
     WinError.
 
-    Reproduced live: a real upload 500'd with `PermissionError: [WinError 5]
-    Access is denied` on this exact os.replace, saving a freshly-written temp
-    file over an existing report file. If it's still locked after retrying,
-    something more persistent has it open (the destination file itself open
-    in Excel, a stuck AV scan, ...) and this raises so the caller can report
-    that plainly instead of the raw error reaching the user as an
-    unqualified 500.
+    Reproduced live twice now: a real upload 500'd with `PermissionError:
+    [WinError 5] Access is denied` on this exact os.replace, saving a
+    freshly-written temp file over an existing report file — the second
+    time against the same destination file as the first, and outlasting the
+    original ~2s retry budget, which is what motivated widening it (see
+    _retry_transient_lock). If it's still locked after retrying, something
+    more persistent has it open — most plausibly, given a transient AV scan
+    should have cleared well inside this window, the destination file
+    itself sitting open in Excel or an Explorer preview pane — and this
+    raises so the caller can report that plainly instead of the raw error
+    reaching the user as an unqualified 500.
     """
     try:
         _retry_transient_lock(lambda: os.replace(src, dest), attempts=attempts, delay=delay)
     except PermissionError as e:
         raise OSError(
             f"Windows wouldn't let this file be saved ({e}). This usually means another "
-            "program — antivirus scanning it, or the file open in Excel — briefly has it locked. "
-            "Close anything that might have it open and try uploading again."
+            "program has it locked — antivirus scanning it, the file open in Excel, or even just "
+            "showing in an Explorer preview pane. Close anything that might have it open "
+            "(including any Explorer window previewing it) and try uploading again."
         ) from e
 
 

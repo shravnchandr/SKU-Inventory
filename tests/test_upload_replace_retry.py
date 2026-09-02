@@ -168,7 +168,16 @@ def test_upload_endpoint_reports_a_clean_message_when_stat_stays_locked(tmp_path
             raise PermissionError(5, "Access is denied")
         return real_stat(self, *args, **kwargs)
 
-    with app.test_client() as c, patch.object(Path, "stat", always_locked), open(path, "rb") as f:
+    # A persistent (not just transient) lock now retries for real across the
+    # full ~6.75s budget (10 attempts, 0.75s apart — see _retry_transient_lock)
+    # before giving up; patch out the actual sleeping so this test still
+    # exercises every real retry iteration without the suite paying for it.
+    with (
+        app.test_client() as c,
+        patch.object(Path, "stat", always_locked),
+        patch("src.gowri_proj.webapp.time.sleep"),
+        open(path, "rb") as f,
+    ):
         resp = c.post(
             "/api/upload",
             data={"file": (io.BytesIO(f.read()), "stocknsales0826.xls")},
@@ -191,10 +200,15 @@ def test_upload_endpoint_surfaces_a_clean_message_instead_of_a_bare_500(tmp_path
     path = tmp_path / "stocknsales0826.xls"
     _write_stock_statement(path)
 
-    with app.test_client() as c, patch(
-        "src.gowri_proj.webapp.os.replace",
-        side_effect=PermissionError(5, "Access is denied"),
-    ), open(path, "rb") as f:
+    with (
+        app.test_client() as c,
+        patch(
+            "src.gowri_proj.webapp.os.replace",
+            side_effect=PermissionError(5, "Access is denied"),
+        ),
+        patch("src.gowri_proj.webapp.time.sleep"),
+        open(path, "rb") as f,
+    ):
         resp = c.post(
             "/api/upload",
             data={"file": (io.BytesIO(f.read()), "stocknsales0826.xls")},

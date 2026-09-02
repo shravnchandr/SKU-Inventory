@@ -19,7 +19,17 @@
     padding: 8px 12px; border-radius: var(--radius-sm); background: var(--page); border: 1px solid var(--border);
   }
   .upload-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .upload-item .status { color: var(--text-muted); flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+  /* flex: 0 0 auto (no shrink) let a long error message overflow the card
+     instead of wrapping — the friendlier, more detailed error text this
+     app now returns (e.g. the WinError-5-locked-file explanation) made
+     that a real, reproduced problem, not a hypothetical one. min-width: 0
+     is the actual fix: flex items default to a min-width of their own
+     content's natural (unwrapped) size, which silently overrides
+     white-space: normal's ability to wrap until it's zeroed out. */
+  .upload-item .status {
+    color: var(--text-muted); flex: 0 1 auto; min-width: 0;
+    display: flex; align-items: center; gap: 6px; white-space: normal; word-break: break-word;
+  }
   .upload-item.ok .status { color: var(--status-good); }
   .upload-item.warn .status { color: var(--status-warning); }
   .upload-item.err .status { color: var(--status-critical); }
