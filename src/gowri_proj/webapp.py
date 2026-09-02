@@ -177,6 +177,14 @@ def _retry_transient_lock(fn, *, attempts: int = 5, delay: float = 0.4):
     file (nothing else has ever had a handle on it) or creating a directory
     (not the kind of thing a scanner holds a lock on).
     """
+    if attempts < 1:
+        # attempts=0 would skip the loop entirely, leaving last_error at
+        # None below and turning `raise last_error` into `raise None` — a
+        # bare TypeError that hides what actually went wrong. Every call
+        # site today uses the default of 5, so this can't fire in practice;
+        # it's here so a future caller passing an accidental 0 fails
+        # immediately and legibly instead.
+        raise ValueError(f"attempts must be at least 1, got {attempts!r}")
     last_error: PermissionError | None = None
     for attempt in range(attempts):
         try:

@@ -97,6 +97,16 @@ def test_retry_transient_lock_retries_past_a_permission_error(tmp_path):
     assert calls["n"] == 3
 
 
+def test_retry_transient_lock_rejects_attempts_below_one():
+    # attempts=0 would skip the retry loop entirely and hit `raise
+    # last_error` with last_error still None — a bare, confusing TypeError
+    # instead of a clear failure. No call site passes this today (all use
+    # the default of 5), but the function should refuse it outright rather
+    # than depend on that.
+    with pytest.raises(ValueError, match="attempts must be at least 1"):
+        _retry_transient_lock(lambda: "unreachable", attempts=0)
+
+
 def test_retry_transient_lock_gives_up_and_reraises_the_original_error(tmp_path):
     def always_locked():
         raise PermissionError(5, "Access is denied")
