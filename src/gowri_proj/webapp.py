@@ -11,6 +11,7 @@ import logging
 import os
 import secrets
 import tempfile
+import threading
 import time
 from contextlib import contextmanager
 from logging.handlers import RotatingFileHandler
@@ -49,6 +50,7 @@ from .dashboard import (
 )
 from .parser import parse_item_list, parse_stock_statement
 from .sync import DEFAULT_UPLOADS_DIR, fy_folder, sync_folder
+from .update_check import UpdateStatus, check_for_update
 
 ITEM_CATALOG_FILENAME = "item_catalog.xlsx"
 
@@ -90,6 +92,26 @@ def _configure_error_log(app: Flask, log_dir: str) -> Path:
     setattr(handler, _ERROR_LOG_HANDLER_MARK, True)
     app.logger.addHandler(handler)
     return log_path
+
+
+def _update_banner_message(status: UpdateStatus) -> str:
+    """The update-banner's body text, built here rather than assembled
+    across multiple lines in the Jinja template — Jinja preserves the
+    whitespace/newlines between tags in the source as literal output
+    unless every line uses explicit `{%- -%}` trim markers, which turns
+    "3 commits behind" into "3 commits\n      behind" the moment the
+    template gets re-wrapped for readability. One plain string is also
+    simpler to test, and Jinja's autoescaping still covers it as a whole —
+    latest_summary (a git commit subject, so arguably attacker-influenced
+    if anyone with push access to the fork this points at were untrusted)
+    reaches the page exactly like every other {{ value }} on it.
+    """
+    plural = "" if status.commits_behind == 1 else "s"
+    message = f"{status.commits_behind} commit{plural} behind"
+    if status.latest_summary:
+        message += f' — latest: "{status.latest_summary}"'
+    message += ". Double-click update.bat (or update.command on Mac), then restart the app."
+    return message
 
 
 def _value_segment_for(summary: InventorySummary, sku: str) -> dict | None:
@@ -281,6 +303,11 @@ def create_app(
     app.config["_SUMMARY_CACHE"] = None
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
     app.config["ERROR_LOG_PATH"] = _configure_error_log(app, log_dir)
+    # Set for real by start_update_check() (called from app.py's main(), not
+    # here — see that function's docstring for why create_app() itself stays
+    # network-free) once its background check completes; None until then,
+    # and forever if the check never finds anything worth reporting.
+    app.config["_UPDATE_STATUS"] = None
     # Regenerated every process start. Not persisted — its only job is to stop
     # a page from some *other* site making mutating requests to this local
     # server (a real risk: this binds to 127.0.0.1 but any tab open in the
@@ -406,7 +433,13 @@ def create_app(
 
     @app.context_processor
     def inject_globals():
-        return {"company": company_name(), "csrf_token": app.config["CSRF_TOKEN"]}
+        update_status = app.config.get("_UPDATE_STATUS")
+        return {
+            "company": company_name(),
+            "csrf_token": app.config["CSRF_TOKEN"],
+            "update_status": update_status,
+            "update_message": _update_banner_message(update_status) if update_status else None,
+        }
 
     @app.before_request
     def check_csrf():
@@ -897,3 +930,37 @@ def create_app(
         )
 
     return app
+
+
+def start_update_check(app: Flask, repo_dir: str = ".") -> None:
+    """Kick off a one-time, one-shot background check of whether origin/main
+    has commits this checkout doesn't — the result lands in
+    app.config["_UPDATE_STATUS"] whenever it's ready, and every page picks
+    it up on its next render via inject_globals()'s context processor.
+
+    Deliberately *not* called from create_app() itself: this is the app's
+    only outbound network call (a git fetch against the update source — no
+    inventory data, just ref names), and create_app() is called on every
+    test run and every accidental re-run — none of which should be doing
+    network I/O or spawning background threads as a side effect of just
+    building the Flask app object. app.py's main() calls this once, right
+    before app.run(), matching "check once, at startup" — not a recurring
+    poll while the app is left open, which is all that's actually been
+    asked for so far.
+
+    A daemon thread so it can never keep the process alive on its own if
+    something hangs (fetch has its own timeout regardless, but this is the
+    same belt-and-suspenders as the browser-opening Timer in app.py).
+    """
+
+    def _check():
+        try:
+            app.config["_UPDATE_STATUS"] = check_for_update(repo_dir)
+        except Exception:
+            # This thread has no caller to report to; letting anything here
+            # escape would just be an unraisable-exception warning on
+            # stderr for a feature that's explicitly allowed to fail
+            # silently.
+            app.logger.exception("Update check failed")
+
+    threading.Thread(target=_check, daemon=True).start()

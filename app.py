@@ -11,7 +11,7 @@ import socket
 import threading
 import webbrowser
 
-from src.gowri_proj.webapp import create_app
+from src.gowri_proj.webapp import create_app, start_update_check
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -36,6 +36,7 @@ def main() -> None:
     print(f"Starting inventory app at {url}")
     print("Leave this window open while you use the app. Close it to stop.")
     threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    start_update_check(app)
     app.run(host=HOST, port=port, debug=False, use_reloader=False)
 
 

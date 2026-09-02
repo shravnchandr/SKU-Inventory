@@ -165,6 +165,25 @@
   }
   .theme-toggle:hover { color: var(--text-primary); }
 
+  /* ---------- update-available banner ---------- */
+  /* Calm, not urgent — this is "there's news," not "go fix something now"
+     (that register is reserved for the Dashboard's move-strip-urgent), so
+     it gets the same understated thin-left-border treatment as an
+     informational move-strip-notice, just scoped here in base.html since
+     it can show on any page, not only the Dashboard. */
+  .update-banner {
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 24px; background: var(--surface-1); border-bottom: 1px solid var(--border);
+    border-left: 4px solid var(--accent); font-size: var(--text-sm); color: var(--text-secondary);
+  }
+  .update-banner strong { color: var(--text-primary); }
+  .update-banner .update-dismiss {
+    margin-left: auto; background: none; border: none; color: var(--text-muted); cursor: pointer;
+    font-size: var(--text-md); line-height: 1; padding: 4px; border-radius: var(--radius-sm);
+    transition: color var(--transition-fast), background var(--transition-fast);
+  }
+  .update-banner .update-dismiss:hover { color: var(--text-primary); background: var(--page); }
+
   .wrap { max-width: 1180px; margin: 0 auto; padding: 24px; display: flex; flex-direction: column; gap: 20px; }
 
   .page-head { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px; }
@@ -414,6 +433,13 @@
     </button>
   </div>
 
+  {% if update_status %}
+  <div class="update-banner" id="update-banner" data-commit="{{ update_status.latest_commit or '' }}">
+    <span><strong>An update is available</strong> — {{ update_message }}</span>
+    <button class="update-dismiss" id="update-dismiss" type="button" aria-label="Dismiss">✕</button>
+  </div>
+  {% endif %}
+
   <div class="wrap">
     {% block content %}{% endblock %}
   </div>
@@ -456,6 +482,24 @@ const safeStorage = {
     document.documentElement.setAttribute('data-theme', cur);
     safeStorage.set('inv-theme', cur);
     sync();
+  });
+})();
+
+// ---------- update-available banner ----------
+// Dismiss is keyed to the specific commit it's currently pointing at (not a
+// flat "seen it" flag) — so dismissing today's notice doesn't also hide a
+// *later* one once more commits land upstream.
+(function () {
+  const banner = document.getElementById('update-banner');
+  if (!banner) return;
+  const commit = banner.dataset.commit;
+  if (commit && safeStorage.get('inv-update-dismissed') === commit) {
+    banner.style.display = 'none';
+    return;
+  }
+  document.getElementById('update-dismiss').addEventListener('click', () => {
+    if (commit) safeStorage.set('inv-update-dismissed', commit);
+    banner.style.display = 'none';
   });
 })();
 
