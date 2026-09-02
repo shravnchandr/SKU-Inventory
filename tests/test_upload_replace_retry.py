@@ -16,7 +16,12 @@ from unittest.mock import MagicMock, patch
 import openpyxl
 import pytest
 
-from src.gowri_proj.webapp import _replace_with_retry, _staged_upload, create_app
+from src.gowri_proj.webapp import (
+    _replace_with_retry,
+    _retry_transient_lock,
+    _staged_upload,
+    create_app,
+)
 
 HEADER_ROW = [
     "Item", None, None, None, None,
@@ -77,6 +82,93 @@ def test_replace_gives_up_and_raises_a_plain_message_after_repeated_failures(tmp
     # The original file must still be intact — a failed replace shouldn't
     # have touched it.
     assert dest.read_text() == "old"
+
+
+def test_retry_transient_lock_retries_past_a_permission_error(tmp_path):
+    calls = {"n": 0}
+
+    def flaky():
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise PermissionError(5, "Access is denied")
+        return "done"
+
+    assert _retry_transient_lock(flaky, attempts=5, delay=0) == "done"
+    assert calls["n"] == 3
+
+
+def test_retry_transient_lock_gives_up_and_reraises_the_original_error(tmp_path):
+    def always_locked():
+        raise PermissionError(5, "Access is denied")
+
+    with pytest.raises(PermissionError, match="Access is denied"):
+        _retry_transient_lock(always_locked, attempts=3, delay=0)
+
+
+def test_upload_endpoint_retries_past_a_flaky_stat_after_a_successful_replace(tmp_path):
+    # The replace itself succeeds; only the immediate stat() read-back
+    # (used for the watched_files fingerprint) is momentarily locked. This
+    # must not fail the upload — a few retries and it should import
+    # normally, exactly like a flaky os.replace does.
+    app = create_app(
+        db_path=str(tmp_path / "test.db"),
+        uploads_dir=str(tmp_path / "uploads"),
+        log_dir=str(tmp_path / "logs"),
+    )
+    app.config["PROPAGATE_EXCEPTIONS"] = False
+    path = tmp_path / "stocknsales0826.xls"
+    _write_stock_statement(path)
+
+    real_stat = Path.stat
+    calls = {"n": 0}
+
+    def flaky_stat(self, *args, **kwargs):
+        if self.suffix == ".xls" and not self.name.startswith("."):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise PermissionError(5, "Access is denied")
+        return real_stat(self, *args, **kwargs)
+
+    with app.test_client() as c, patch.object(Path, "stat", flaky_stat), open(path, "rb") as f:
+        resp = c.post(
+            "/api/upload",
+            data={"file": (io.BytesIO(f.read()), "stocknsales0826.xls")},
+            headers={"X-CSRF-Token": app.config["CSRF_TOKEN"]},
+            content_type="multipart/form-data",
+        )
+
+    assert resp.status_code == 200
+    assert calls["n"] == 3
+
+
+def test_upload_endpoint_reports_a_clean_message_when_stat_stays_locked(tmp_path):
+    app = create_app(
+        db_path=str(tmp_path / "test.db"),
+        uploads_dir=str(tmp_path / "uploads"),
+        log_dir=str(tmp_path / "logs"),
+    )
+    app.config["PROPAGATE_EXCEPTIONS"] = False
+    path = tmp_path / "stocknsales0826.xls"
+    _write_stock_statement(path)
+
+    real_stat = Path.stat
+
+    def always_locked(self, *args, **kwargs):
+        if self.suffix == ".xls" and not self.name.startswith("."):
+            raise PermissionError(5, "Access is denied")
+        return real_stat(self, *args, **kwargs)
+
+    with app.test_client() as c, patch.object(Path, "stat", always_locked), open(path, "rb") as f:
+        resp = c.post(
+            "/api/upload",
+            data={"file": (io.BytesIO(f.read()), "stocknsales0826.xls")},
+            headers={"X-CSRF-Token": app.config["CSRF_TOKEN"]},
+            content_type="multipart/form-data",
+        )
+
+    assert resp.status_code == 500
+    body = resp.get_json()
+    assert "couldn't read it back" in body["error"].lower()
 
 
 def test_upload_endpoint_surfaces_a_clean_message_instead_of_a_bare_500(tmp_path):

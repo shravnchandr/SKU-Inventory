@@ -201,11 +201,24 @@ def _dedupe_stock_entries(conn: sqlite3.Connection) -> None:
     )
 
 
+CONNECT_TIMEOUT_SECONDS = 20.0
+
+
 @contextmanager
 def connect(db_path: str = DEFAULT_DB_PATH) -> Iterator[sqlite3.Connection]:
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path)
+    # sqlite3.connect's own default timeout (5s) is how long it silently
+    # retries before raising "database is locked" — the only real defense
+    # this app has against two overlapping writers (a browser upload landing
+    # while a refresh is mid-import, two browser tabs, antivirus/backup
+    # software holding a read lock on the file). 5s is tight for a
+    # multi-thousand-row import; a generous but still-bounded timeout here
+    # (SQLite's own retry loop, not custom code) turns a plausible collision
+    # into "briefly slower" instead of a 500, without the added complexity
+    # (and, on a folder that may be OneDrive-synced — see the WinError 5
+    # writeup above — the added risk) of switching journal modes.
+    conn = sqlite3.connect(path, timeout=CONNECT_TIMEOUT_SECONDS)
     conn.execute("PRAGMA foreign_keys = ON")
     conn.executescript(SCHEMA)
     _migrate(conn)

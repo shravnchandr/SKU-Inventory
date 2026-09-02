@@ -76,7 +76,17 @@ def sync_folder(conn: sqlite3.Connection, folder: str) -> SyncResult:
     for path in candidates:
         rel_name = path.relative_to(folder_path).as_posix()
 
-        stat = path.stat()
+        try:
+            stat = path.stat()
+        except OSError as e:
+            # A file that's locked (antivirus scanning it, open in Excel)
+            # or vanished between the rglob() listing above and here (moved
+            # or deleted mid-scan) must not abort the whole refresh — every
+            # other file in the folder is still worth importing. Report just
+            # this one and move on; it'll be picked up again next refresh
+            # once it's no longer locked/missing.
+            result.errors.append((rel_name, f"Could not read this file ({e})"))
+            continue
         filesize, mtime = stat.st_size, int(stat.st_mtime)
         known = db.get_watched_file(conn, rel_name)
         if known is not None and known["filesize"] == filesize and known["mtime"] == mtime:

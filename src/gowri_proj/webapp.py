@@ -160,36 +160,55 @@ def _staged_upload(file: FileStorage, filename: str, uploads_dir: Path):
             pass
 
 
-def _replace_with_retry(src: Path, dest: Path, attempts: int = 5, delay: float = 0.4) -> None:
-    """os.replace, retrying briefly on a transient PermissionError.
+def _retry_transient_lock(fn, *, attempts: int = 5, delay: float = 0.4):
+    """Call fn(), retrying briefly on a transient PermissionError before
+    giving up and letting it raise.
 
-    Reproduced live: a real upload 500'd with `PermissionError: [WinError 5]
-    Access is denied` on this exact os.replace, saving a freshly-written temp
-    file over an existing report file. Windows (unlike POSIX rename, which
-    doesn't care who else has a file open) refuses to replace a file that's
-    momentarily locked by another handle — most commonly antivirus real-time
-    scanning grabbing the just-written temp file for a moment before this
-    call gets to it. That's normally over in well under a second; a few
-    retries with a short pause clears it without the user ever seeing
-    anything. If it's still locked after that, something more persistent has
-    it open (the destination file itself open in Excel, a stuck AV scan,
-    ...) and this raises so the caller can report that plainly instead of a
-    bare WinError reaching the user as an unqualified 500.
+    Windows (unlike POSIX, which doesn't care who else has a file open)
+    refuses some filesystem operations — replacing a file, occasionally even
+    just stat'ing one — while another process momentarily has it locked.
+    Most commonly that's antivirus real-time scanning grabbing a
+    just-written file for a moment. That's normally over in well under a
+    second; a few retries with a short pause clears it without anyone
+    noticing. Used for the filesystem calls in the upload path that have
+    actually hit this live (os.replace) or sit right next to it (stat'ing
+    the same file immediately after) — not for calls that aren't
+    meaningfully exposed to it, like writing a brand-new uniquely-named temp
+    file (nothing else has ever had a handle on it) or creating a directory
+    (not the kind of thing a scanner holds a lock on).
     """
-    last_error: OSError | None = None
+    last_error: PermissionError | None = None
     for attempt in range(attempts):
         try:
-            os.replace(src, dest)
-            return
+            return fn()
         except PermissionError as e:
             last_error = e
             if attempt < attempts - 1:
                 time.sleep(delay)
-    raise OSError(
-        f"Windows wouldn't let this file be saved ({last_error}). This usually means another "
-        "program — antivirus scanning it, or the file open in Excel — briefly has it locked. "
-        "Close anything that might have it open and try uploading again."
-    ) from last_error
+    raise last_error
+
+
+def _replace_with_retry(src: Path, dest: Path, attempts: int = 5, delay: float = 0.4) -> None:
+    """os.replace, retrying briefly on a transient PermissionError (see
+    _retry_transient_lock) before raising a plain message instead of a bare
+    WinError.
+
+    Reproduced live: a real upload 500'd with `PermissionError: [WinError 5]
+    Access is denied` on this exact os.replace, saving a freshly-written temp
+    file over an existing report file. If it's still locked after retrying,
+    something more persistent has it open (the destination file itself open
+    in Excel, a stuck AV scan, ...) and this raises so the caller can report
+    that plainly instead of the raw error reaching the user as an
+    unqualified 500.
+    """
+    try:
+        _retry_transient_lock(lambda: os.replace(src, dest), attempts=attempts, delay=delay)
+    except PermissionError as e:
+        raise OSError(
+            f"Windows wouldn't let this file be saved ({e}). This usually means another "
+            "program — antivirus scanning it, or the file open in Excel — briefly has it locked. "
+            "Close anything that might have it open and try uploading again."
+        ) from e
 
 
 def _serialize_reports(reports_df: pd.DataFrame) -> list[dict]:
@@ -768,7 +787,19 @@ def create_app(
                     # Nothing's touched the DB yet at this point, so it's
                     # safe to just report this and stop.
                     return jsonify(error=str(e)), 500
-                stat = dest.stat()
+                try:
+                    stat = _retry_transient_lock(dest.stat)
+                except PermissionError as e:
+                    # The file *is* saved at this point (the replace above
+                    # already succeeded) — just couldn't be read back for its
+                    # size/mtime, most likely the same kind of transient lock
+                    # as the replace itself. Nothing's touched the DB yet, so
+                    # it's still safe to stop here and ask for a retry rather
+                    # than import with a fingerprint we don't actually have.
+                    return jsonify(
+                        error=f"Saved the file but couldn't read it back afterward ({e}). "
+                        "This is usually a momentary antivirus lock — try uploading again."
+                    ), 500
                 import_result = db.import_report(
                     conn, df, meta, rel_name, replace=(existing_report_id is not None)
                 )
