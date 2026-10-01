@@ -744,6 +744,109 @@ def summarize_history(
     )
 
 
+class StatusHistoryPoint(TypedDict):
+    as_of: str  # ISO date — the report's period_end, i.e. when this stock was counted
+    label: str
+    status_counts: dict[str, int]  # every status in STATUS_ORDER, zeros included
+    status_values: dict[str, float]
+    total_skus: int
+    total_value: float
+    total_units: float
+    # The sales pace behind low/overstock/healthy covered fewer days than
+    # trailing_days_target, because there wasn't that much history yet as of
+    # this point. Statuses are still computed, just from a shorter window.
+    short_sales_window: bool
+    # Less than dead_stock_days of imported history before this point, so
+    # nothing *could* have been flagged dead yet. The dead_stock count here is
+    # a floor, not a real measurement.
+    dead_stock_unmeasurable: bool
+
+
+def _as_of_label(period_end: date) -> str:
+    """Chart label for a point: "Aug 2026" for a report ending on a month's
+    last day, "9 Aug 2026" for one ending mid-month (a partial month), so a
+    partial latest point doesn't read as if it were the whole month."""
+    if (period_end + pd.Timedelta(days=1)).month != period_end.month:
+        return period_end.strftime("%b %Y")
+    return f"{period_end.day} {period_end.strftime('%b %Y')}"
+
+
+def status_history(
+    all_entries: pd.DataFrame,
+    trailing_days_target: int = TRAILING_DAYS_TARGET,
+    dead_stock_days: int = DEAD_STOCK_DAYS,
+    low_stock_days: int = LOW_STOCK_DAYS,
+    overstock_days: int = OVERSTOCK_DAYS,
+    value_tier_a_pct: float = VALUE_TIER_A_PCT,
+    value_tier_b_pct: float = VALUE_TIER_B_PCT,
+) -> list[StatusHistoryPoint]:
+    """How the dashboard's status breakdown (and its on-hand totals) looked
+    at each past month: one point per calendar month, oldest first.
+
+    Each point is literally summarize_history() run over only the reports
+    that existed as of that month's last report, as if it were the latest
+    import. Deliberately not a separate re-implementation of the status
+    rules: that would be a second copy of the classification to keep in
+    sync, and the moment the two drifted the history chart's latest point
+    would stop matching the dashboard right above it. Reusing the real thing
+    makes the latest point identical by construction (it's run on the exact
+    same all_entries).
+
+    Re-judged with *today's* thresholds, not whatever Settings said back
+    then (which isn't recorded anywhere): a consistent yardstick across the
+    whole chart, but not a record of what the dashboard showed at the time.
+
+    One point per calendar month (the latest report ending in that month),
+    not one per report: under daily-cadence uploads that would be hundreds
+    of full summarize_history() runs for a chart that only needs to show the
+    month-to-month shape.
+    """
+    if all_entries.empty:
+        return []
+    reports = (
+        all_entries[["report_id", "period_start", "period_end"]]
+        .drop_duplicates("report_id")
+        .sort_values(["period_end", "period_start"])
+    )
+    month_ends = reports.groupby(reports["period_end"].dt.to_period("M"))["period_end"].max()
+    earliest_start = reports["period_start"].min()
+    latest_end = reports["period_end"].max()
+    kwargs = {
+        "trailing_days_target": trailing_days_target,
+        "dead_stock_days": dead_stock_days,
+        "low_stock_days": low_stock_days,
+        "overstock_days": overstock_days,
+        "value_tier_a_pct": value_tier_a_pct,
+        "value_tier_b_pct": value_tier_b_pct,
+    }
+
+    points: list[StatusHistoryPoint] = []
+    for as_of in month_ends.sort_values():
+        # The final point uses all_entries itself rather than a filtered
+        # copy, so it's not just equal to the live dashboard's summary but
+        # computed from the very same frame.
+        entries = (
+            all_entries if as_of == latest_end else all_entries[all_entries["period_end"] <= as_of]
+        )
+        s = summarize_history(entries, **kwargs)
+        points.append(
+            {
+                "as_of": as_of.date().isoformat(),
+                "label": _as_of_label(as_of.date()),
+                "status_counts": {st: int(s.status_counts.get(st, 0)) for st in STATUS_ORDER},
+                "status_values": {
+                    st: round(float(s.status_values.get(st, 0.0)), 2) for st in STATUS_ORDER
+                },
+                "total_skus": int(s.total_skus),
+                "total_value": round(s.total_value, 2),
+                "total_units": round(s.total_units, 0),
+                "short_sales_window": s.meta.trailing_days < trailing_days_target,
+                "dead_stock_unmeasurable": (as_of - earliest_start).days + 1 < dead_stock_days,
+            }
+        )
+    return points
+
+
 def search_skus(enriched: pd.DataFrame, query: str, limit: int = 50) -> list[dict]:
     """Case-insensitive substring search across every *current* SKU — brand
     or name — not scoped to any one status bucket. Unlike the per-tab search

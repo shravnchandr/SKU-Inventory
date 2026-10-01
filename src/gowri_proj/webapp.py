@@ -39,6 +39,7 @@ from .analysis import (
     format_days_of_cover,
     search_skus,
     sku_history,
+    status_history,
     summarize_history,
 )
 from .dashboard import (
@@ -313,6 +314,12 @@ def create_app(
     app.config["DB_PATH"] = db_path
     app.config["UPLOADS_DIR"] = uploads_dir
     app.config["_SUMMARY_CACHE"] = None
+    # (summary, points) for /api/status-history — see that route. Keyed on
+    # the summary object's identity: get_current_data() builds a new summary
+    # whenever the data or settings change, so "same object" means "still
+    # valid" without duplicating its fingerprint logic here.
+    app.config["_STATUS_HISTORY_CACHE"] = None
+    status_history_lock = threading.Lock()
     app.config["MAX_CONTENT_LENGTH"] = MAX_UPLOAD_BYTES
     app.config["ERROR_LOG_PATH"] = _configure_error_log(app, log_dir)
     # Set for real by start_update_check() (called from app.py's main(), not
@@ -588,6 +595,44 @@ def create_app(
                     "current": current,
                     "value_segment": value_segment,
                     "history": history,
+                }
+            )
+        )
+
+    @app.get("/api/status-history")
+    def api_status_history():
+        """Month-by-month status breakdown and on-hand totals, for the
+        dashboard's history popups. Expensive on a cold cache (one full
+        summarize_history() per imported month — a few seconds), so it's
+        computed once per data/settings state and only on request, never as
+        part of rendering a page. The lock makes a second request that
+        arrives mid-computation (the page's background pre-warm, then a
+        click) wait for that result instead of starting its own.
+        """
+        all_entries, summary, thresholds = get_current_data()
+        if summary is None:
+            return jsonify(error="No data imported yet."), 404
+        with status_history_lock:
+            cache = app.config["_STATUS_HISTORY_CACHE"]
+            if cache is not None and cache[0] is summary:
+                points = cache[1]
+            else:
+                points = status_history(
+                    all_entries,
+                    trailing_days_target=thresholds["trailing_days_target"],
+                    dead_stock_days=thresholds["dead_stock_days"],
+                    low_stock_days=thresholds["low_stock_days"],
+                    overstock_days=thresholds["overstock_days"],
+                    value_tier_a_pct=thresholds["value_tier_a_pct"],
+                    value_tier_b_pct=thresholds["value_tier_b_pct"],
+                )
+                app.config["_STATUS_HISTORY_CACHE"] = (summary, points)
+        return jsonify(
+            _sanitize(
+                {
+                    "points": points,
+                    "trailing_days_target": thresholds["trailing_days_target"],
+                    "dead_stock_days": thresholds["dead_stock_days"],
                 }
             )
         )
