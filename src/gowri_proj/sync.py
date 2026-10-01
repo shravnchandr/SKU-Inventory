@@ -8,7 +8,9 @@ new files are parsed and imported, a file whose period was already imported
 under a different name is flagged rather than silently duplicated, and a
 file that changed to cover a *different* period than it used to (same
 identity, new period) is flagged too rather than quietly creating a second
-report and orphaning the first.
+report and orphaning the first. When two files' periods overlap, the one
+saved most recently wins (by file modification time); the older one is
+recorded as superseded and left alone on later scans.
 """
 
 from __future__ import annotations
@@ -59,6 +61,9 @@ class SyncResult:
     filename_reused: list[tuple[str, str, str]] = field(
         default_factory=list
     )  # rel_path, old period, new period
+    superseded: list[tuple[str, str, str]] = field(
+        default_factory=list
+    )  # rel_path, its own period, newer file that covers it
     errors: list[tuple[str, str]] = field(default_factory=list)  # rel_path, error message
 
 
@@ -148,6 +153,30 @@ def sync_folder(conn: sqlite3.Connection, folder: str) -> SyncResult:
             )
             db.upsert_watched_file(
                 conn, rel_name, filesize, mtime, existing_report_id, "duplicate_period"
+            )
+            continue
+
+        # Overlaps a report imported from a more recently saved file — that
+        # newer file wins, so this one is skipped rather than deleting it
+        # (see db.find_newer_overlapping_source). Fingerprinted with the
+        # winning report's id, same convention as duplicate_period above:
+        # an unchanged file is then skipped on every later scan, and if that
+        # winning report is ever removed or replaced, delete_report clears
+        # this fingerprint too, so the file gets reconsidered.
+        newer = db.find_newer_overlapping_source(conn, meta, mtime)
+        if newer is not None:
+            period = f"{meta.period_start.isoformat()} to {meta.period_end.isoformat()}"
+            result.superseded.append((rel_name, period, newer["filename"]))
+            db.upsert_watched_file(
+                conn,
+                rel_name,
+                filesize,
+                mtime,
+                newer["report_id"],
+                "superseded",
+                f"Covers {period}, which overlaps {newer['period_start']} to "
+                f"{newer['period_end']} from {newer['filename']} — a more recently saved file, "
+                "so that one is used instead. Delete this file if it's no longer needed.",
             )
             continue
 

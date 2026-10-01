@@ -506,6 +506,12 @@ document.getElementById('refresh-btn')?.addEventListener('click', async (ev) => 
   try {
     const data = await api('/api/refresh', { method: 'POST' });
     const n = data.imported.length;
+    // Not an error: an older file overlapping a newer one is skipped by
+    // design (see sync.py) — but say so, or it looks like nothing happened.
+    const sup = (data.superseded || []).length;
+    if (sup > 0) {
+      toast(`${sup} older file${sup === 1 ? '' : 's'} skipped — overlapped by a more recently saved file. See Import health below.`);
+    }
     if (n > 0) {
       toast(`Imported ${n} new report${n === 1 ? '' : 's'}.`, 'success');
     } else if (data.errors.length) {

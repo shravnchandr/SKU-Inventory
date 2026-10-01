@@ -504,6 +504,47 @@ def upsert_watched_file(
     )
 
 
+def find_newer_overlapping_source(
+    conn: sqlite3.Connection, meta: ReportMeta, mtime: int
+) -> sqlite3.Row | None:
+    """The already-imported report that overlaps `meta` (exact-period
+    matches excluded, same as find_overlapping_reports) and came from a
+    file saved more recently than `mtime` — or None if there's no such
+    report. Returns the report's period alongside its source file's
+    watched_files fingerprint (filename, mtime).
+
+    Used by sync_folder to apply "the newest upload wins" (see
+    find_overlapping_reports) by when each file was actually *saved*, not
+    by the order a folder scan happens to reach them in. Without this, two
+    overlapping files sitting in uploads/ — e.g. a mid-month partial
+    export next to the full month — would each delete the other's report
+    on every rescan, and whichever sorted last alphabetically would end up
+    as "the" report for that period regardless of which was newer.
+
+    A report with no imported watched_files fingerprint (e.g. one imported
+    via the CLI's `import` from outside uploads/) has no saved-at time to
+    compare against, so it never counts as newer here — the scan's file
+    replaces it, exactly as before this check existed.
+    """
+    conn.row_factory = sqlite3.Row
+    row = conn.execute(
+        "SELECT r.id AS report_id, r.period_start, r.period_end, w.filename, w.mtime "
+        "FROM reports r JOIN watched_files w ON w.report_id = r.id AND w.status = 'imported' "
+        "WHERE r.period_start <= ? AND r.period_end >= ? AND NOT (r.period_start = ? AND r.period_end = ?) "
+        "AND w.mtime > ? "
+        "ORDER BY w.mtime DESC LIMIT 1",
+        (
+            meta.period_end.isoformat(),
+            meta.period_start.isoformat(),
+            meta.period_start.isoformat(),
+            meta.period_end.isoformat(),
+            mtime,
+        ),
+    ).fetchone()
+    conn.row_factory = None
+    return row
+
+
 def list_watched_files_problems(conn: sqlite3.Connection, limit: int = 20) -> pd.DataFrame:
     """Files from the last scan(s) that were rejected rather than imported."""
     return pd.read_sql(

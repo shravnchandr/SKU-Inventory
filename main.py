@@ -124,6 +124,11 @@ def _report_sync(result: SyncResult) -> None:
             f"{new_period}. That old report is still in the database — remove it (see `list`/`remove`) "
             f"first if this new file is correct, then refresh again."
         )
+    for filename, period, newer in result.superseded:
+        print(
+            f"  ~ skipped {filename} ({period}): overlaps {newer}, a more recently saved file, "
+            f"which is used instead"
+        )
     for filename, error in result.errors:
         print(f"  ✗ skipped {filename}: {error}")
     if result.unchanged:
@@ -132,6 +137,7 @@ def _report_sync(result: SyncResult) -> None:
         result.imported
         or result.duplicate_period
         or result.filename_reused
+        or result.superseded
         or result.errors
         or result.unchanged
     ):
