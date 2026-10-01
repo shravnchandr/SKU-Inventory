@@ -64,6 +64,20 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50MB — generous for a stock statement e
 
 _ERROR_LOG_HANDLER_MARK = "_gowri_error_log_handler"
 
+# Browser-tab icon: stacked boxes (inventory) in the app's accent teal
+# (base.html's --accent). Inline rather than a static file — the app has no
+# static/ folder, and one small string is simpler than adding one. Served
+# at /favicon.ico too, since browsers request that path on their own (it
+# was a 404 on every page before this existed).
+FAVICON_SVG = (
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+    '<rect width="32" height="32" rx="7" fill="#0f766e"/>'
+    '<rect x="7" y="17" width="8" height="8" rx="1.5" fill="#fff"/>'
+    '<rect x="17" y="17" width="8" height="8" rx="1.5" fill="#fff"/>'
+    '<rect x="12" y="7" width="8" height="8" rx="1.5" fill="#fff"/>'
+    "</svg>"
+)
+
 
 def _configure_error_log(app: Flask, log_dir: str) -> Path:
     """Write unhandled-error tracebacks to a plain text file, not just
@@ -521,6 +535,18 @@ def create_app(
             # here mean "still broken."
             return False
         return True
+
+    # Decorator order matters: decorators register bottom-up and url_for
+    # returns the first rule registered, so the template's link resolves to
+    # /favicon.svg (the honest extension for an SVG), not /favicon.ico.
+    @app.get("/favicon.ico")
+    @app.get("/favicon.svg")
+    def favicon():
+        return Response(
+            FAVICON_SVG,
+            mimetype="image/svg+xml",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
 
     @app.get("/")
     def index():
