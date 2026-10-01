@@ -21,6 +21,7 @@ import pandas as pd
 
 from . import analysis
 from .analysis import Settings
+from .identity import CodeLookup
 from .parser import ReportMeta
 
 DEFAULT_DB_PATH = "db/inventory.db"
@@ -139,6 +140,23 @@ CREATE TABLE IF NOT EXISTS item_name_changes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_item_name_changes_old ON item_name_changes(old_name);
+
+-- A person's call on whether two stock-statement names are the same item
+-- (see identity.py): "merge" approves a suggested rename, "separate" rejects
+-- one or undoes an automatic merge. Stored so a long review list can be
+-- worked through over several days. Changing a decision is a delete +
+-- insert, never an UPDATE, so (COUNT(*), MAX(id)) changes on every edit —
+-- that pair is the webapp cache's fingerprint for this table. Added later
+-- than the rest of the schema; nothing else references it, so code from
+-- before it existed simply ignores it.
+CREATE TABLE IF NOT EXISTS sku_merge_decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    old_name TEXT NOT NULL,
+    new_name TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (decision IN ('merge', 'separate')),
+    decided_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE (old_name, new_name)
+);
 """
 
 
@@ -728,6 +746,58 @@ def rollback_item_catalog(
     """
     conn.execute("DELETE FROM item_name_changes WHERE rowid > ?", (item_name_changes_watermark,))
     return _replace_item_catalog_table(conn, catalog_snapshot)
+
+
+def get_merge_decisions(conn: sqlite3.Connection) -> pd.DataFrame:
+    """Every stored same-item decision (see identity.resolve), oldest first."""
+    return pd.read_sql(
+        "SELECT old_name, new_name, decision, decided_at FROM sku_merge_decisions ORDER BY id",
+        conn,
+    )
+
+
+def set_merge_decision(
+    conn: sqlite3.Connection, old_name: str, new_name: str, decision: str
+) -> None:
+    """Record (or replace) the decision for one pair of names. Delete then
+    insert rather than upsert, so the row gets a fresh id — see the table's
+    comment on why that matters for the cache."""
+    clear_merge_decision(conn, old_name, new_name)
+    conn.execute(
+        "INSERT INTO sku_merge_decisions (old_name, new_name, decision) VALUES (?, ?, ?)",
+        (old_name, new_name, decision),
+    )
+
+
+def clear_merge_decision(conn: sqlite3.Connection, old_name: str, new_name: str) -> bool:
+    """Undo: forget the decision for this pair (in either order), so the
+    pair goes back to whatever the automatic rules say."""
+    cur = conn.execute(
+        "DELETE FROM sku_merge_decisions WHERE (old_name = ? AND new_name = ?) "
+        "OR (old_name = ? AND new_name = ?)",
+        (old_name, new_name, new_name, old_name),
+    )
+    return cur.rowcount > 0
+
+
+def identity_fingerprint(conn: sqlite3.Connection) -> tuple:
+    """Changes whenever anything identity.resolve depends on (besides the
+    reports themselves) changes: the item list, its rename log, or a
+    stored decision."""
+    return conn.execute(
+        "SELECT (SELECT COUNT(*) FROM item_catalog), "
+        "(SELECT COALESCE(MAX(imported_at), '') FROM item_catalog), "
+        "(SELECT COUNT(*) FROM item_name_changes), "
+        "(SELECT COUNT(*) FROM sku_merge_decisions), "
+        "(SELECT COALESCE(MAX(id), 0) FROM sku_merge_decisions)"
+    ).fetchone()
+
+
+def load_identity_inputs(conn: sqlite3.Connection):
+    """(CodeLookup, decisions) for identity.resolve, from this database."""
+    catalog = pd.read_sql("SELECT code, product_name, long_name FROM item_catalog", conn)
+    log = pd.read_sql("SELECT code, old_name, new_name FROM item_name_changes", conn)
+    return CodeLookup(catalog, log), get_merge_decisions(conn)
 
 
 def get_name_change_map(conn: sqlite3.Connection) -> dict[str, str]:

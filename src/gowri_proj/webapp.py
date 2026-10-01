@@ -26,7 +26,7 @@ from werkzeug.datastructures import FileStorage
 from werkzeug.exceptions import HTTPException
 from werkzeug.utils import secure_filename
 
-from . import db
+from . import db, identity
 from .analysis import (
     THRESHOLD_DAYS_MAX,
     THRESHOLD_DAYS_MIN,
@@ -385,6 +385,14 @@ def create_app(
         the cached frame with just the new reports' rows instead of
         re-reading all of history. Anything else (first load, or a report
         actually removed/superseded) falls back to a full reload.
+
+        What's returned as all_entries is *not* the raw rows: it's them with
+        renamed items' names unified (identity.apply — see identity.py), so
+        every caller sees one item's whole history under one name. The raw
+        frame is what's cached and extended; the unified one is rebuilt
+        whenever the reports, the item list or a merge decision change
+        (identity_fingerprint), and the resolution behind it is available
+        to routes via current_identity().
         """
         if "current_data" in g:
             return g.current_data
@@ -402,6 +410,7 @@ def create_app(
                 "(SELECT COALESCE(version, 0) FROM settings WHERE id = 1)"
             ).fetchone()
             data_fingerprint, settings_version = row[:3], row[3]
+            identity_fp = db.identity_fingerprint(conn)
             cache = app.config["_SUMMARY_CACHE"]
 
             if not db.has_data(conn):
@@ -410,10 +419,14 @@ def create_app(
                     "report_ids": frozenset(),
                     "all_entries": None,
                     "settings_version": settings_version,
+                    "identity_fp": identity_fp,
+                    "resolution": None,
+                    "resolved_entries": None,
                     "summary": None,
                     "settings": None,
                 }
                 g.current_data = result = None, None, None
+                g.identity = None
                 return result
 
             if cache and cache["data_fingerprint"] == data_fingerprint:
@@ -434,13 +447,22 @@ def create_app(
                 report_ids = current_ids
                 data_changed = True
 
-            if not data_changed and cache and cache["settings_version"] == settings_version:
+            identity_changed = data_changed or not cache or cache.get("identity_fp") != identity_fp
+            if identity_changed:
+                codes, decisions = db.load_identity_inputs(conn)
+                resolution = identity.resolve(all_entries, codes, decisions)
+                resolved_entries = identity.apply(all_entries, resolution)
+            else:
+                resolution = cache["resolution"]
+                resolved_entries = cache["resolved_entries"]
+
+            if not identity_changed and cache["settings_version"] == settings_version:
                 summary = cache["summary"]
                 settings = cache["settings"]
             else:
                 settings = db.get_settings(conn)
                 summary = summarize_history(
-                    all_entries,
+                    resolved_entries,
                     trailing_days_target=settings["trailing_days_target"],
                     dead_stock_days=settings["dead_stock_days"],
                     low_stock_days=settings["low_stock_days"],
@@ -454,12 +476,21 @@ def create_app(
                 "report_ids": report_ids,
                 "all_entries": all_entries,
                 "settings_version": settings_version,
+                "identity_fp": identity_fp,
+                "resolution": resolution,
+                "resolved_entries": resolved_entries,
                 "summary": summary,
                 "settings": settings,
             }
-            result = all_entries, summary, settings
+            result = resolved_entries, summary, settings
         g.current_data = result
+        g.identity = resolution
         return result
+
+    def current_identity() -> identity.Resolution | None:
+        """The name grouping behind get_current_data()'s all_entries."""
+        get_current_data()
+        return g.identity
 
     def company_name() -> str | None:
         # Reuse the route's own get_current_data() call for free if it
@@ -597,7 +628,14 @@ def create_app(
         _, summary, _ = get_current_data()
         if summary is None:
             return jsonify(results=[])
-        return jsonify(results=search_skus(summary.enriched, q))
+        # Also matches an item's earlier names (identity.py): an item renamed
+        # since, e.g. tagged "(NON)", should still turn up when searched by
+        # the name someone remembers.
+        resolution = current_identity()
+        results = search_skus(
+            summary.enriched, q, aliases=resolution.aliases if resolution else None
+        )
+        return jsonify(results=results)
 
     @app.get("/api/sku-detail")
     def api_sku_detail():
@@ -628,6 +666,7 @@ def create_app(
         # may be stale (see the comment on current_rows above).
         display_brand = current_rows.iloc[0]["brand"] if not current_rows.empty else brand
         value_segment = _value_segment_for(summary, sku)
+        resolution = current_identity()
         return jsonify(
             _sanitize(
                 {
@@ -636,6 +675,8 @@ def create_app(
                     "current": current,
                     "value_segment": value_segment,
                     "history": history,
+                    # Earlier names this item's history was joined from.
+                    "aliases": resolution.aliases.get(sku, []) if resolution else [],
                 }
             )
         )
@@ -676,6 +717,104 @@ def create_app(
                     "dead_stock_days": thresholds["dead_stock_days"],
                 }
             )
+        )
+
+    # ---------- renamed items (identity.py) ----------
+
+    @app.get("/api/sku-merges")
+    def api_sku_merges():
+        """Everything the Reports page's "Renamed items" card shows: merges
+        already applied (automatic and approved), suggestions waiting for a
+        decision, and every stored decision (so any of them can be undone)."""
+        _, summary, _ = get_current_data()
+        resolution = current_identity()
+        if summary is None or resolution is None:
+            return jsonify(merged=[], pending=[], decided=[])
+        current_brand = summary.enriched.set_index("sku")["brand"].to_dict()
+        merged = [
+            {
+                **m,
+                "brand": current_brand.get(m["display_name"]),
+                "current": m["display_name"] in current_brand,
+            }
+            for m in resolution.merges
+        ]
+        return jsonify(
+            _sanitize(
+                {
+                    "merged": merged,
+                    "pending": resolution.suggestions,
+                    "decided": list(reversed(resolution.decided)),  # newest first
+                }
+            )
+        )
+
+    def _merge_pair_from_request() -> tuple[str, str] | tuple[None, None]:
+        body = request.get_json(silent=True) or {}
+        old, new = body.get("old_name"), body.get("new_name")
+        if not (isinstance(old, str) and isinstance(new, str)) or not old or not new or old == new:
+            return None, None
+        return old, new
+
+    @app.post("/api/sku-merges")
+    def api_sku_merge_decide():
+        """Record a person's decision on one pair of names: "merge" (same
+        item) or "separate" (different items — rejects a suggestion, or
+        splits an automatic merge)."""
+        old, new = _merge_pair_from_request()
+        decision = (request.get_json(silent=True) or {}).get("decision")
+        if old is None or decision not in (identity.DECISION_MERGE, identity.DECISION_SEPARATE):
+            return jsonify(
+                error="Expected old_name, new_name and a decision of 'merge' or 'separate'."
+            ), 400
+        resolution = current_identity()
+        if (
+            resolution is None
+            or old not in resolution.display_name
+            or new not in resolution.display_name
+        ):
+            return jsonify(error="Those names aren't in any imported report."), 404
+        with db.connect(app.config["DB_PATH"]) as conn:
+            db.set_merge_decision(conn, old, new, decision)
+        return jsonify(status="saved", old_name=old, new_name=new, decision=decision)
+
+    @app.post("/api/sku-merges/undo")
+    def api_sku_merge_undo():
+        """Forget a stored decision: the pair goes back to what the
+        automatic rules say."""
+        old, new = _merge_pair_from_request()
+        if old is None:
+            return jsonify(error="Expected old_name and new_name."), 400
+        with db.connect(app.config["DB_PATH"]) as conn:
+            removed = db.clear_merge_decision(conn, old, new)
+        return jsonify(status="undone" if removed else "nothing to undo")
+
+    @app.get("/api/sku-merges/export.csv")
+    def api_sku_merges_export():
+        """Every applied merge and every pending suggestion, for checking
+        the whole list in Excel."""
+        _, _, _ = get_current_data()
+        resolution = current_identity()
+        rows = []
+        if resolution is not None:
+            rows += [{"status": "Merged", "how": m["reason"], **m} for m in resolution.merges]
+            rows += [
+                {"status": "Waiting for review", "how": "stock carried over", **sug}
+                for sug in resolution.suggestions
+            ]
+        return _csv_response(
+            rows,
+            [
+                ("status", "Status"),
+                ("old_name", "Name"),
+                ("new_name", "Same item as"),
+                ("how", "How recognised"),
+                ("display_name", "Shown as"),
+                ("brand", "Brand"),
+                ("period_end", "Renamed in report ending"),
+                ("stock", "Stock carried over"),
+            ],
+            "renamed_items.csv",
         )
 
     @app.get("/api/brand-detail")
@@ -759,7 +898,14 @@ def create_app(
             }
         )
         quality_issues = find_data_quality_issues(all_entries) if all_entries is not None else []
+        resolution = current_identity()
         return jsonify(
+            # Renamed items (identity.py): how many name changes are already
+            # joined up, and how many are waiting for someone to decide.
+            renames={
+                "merged": len(resolution.merges) if resolution else 0,
+                "pending": len(resolution.suggestions) if resolution else 0,
+            },
             last_refresh=last_refresh,
             missing_months=gaps["missing_months"],
             coverage_gaps=gaps["coverage_gaps"],

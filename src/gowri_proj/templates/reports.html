@@ -58,6 +58,25 @@
   }
   .health-row .health-action:hover { background: var(--surface-2); color: var(--text-primary); }
   #health-pill.health-pill-clickable { cursor: pointer; }
+
+  /* ---------- renamed items ---------- */
+  .renames-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
+  .renames-controls .search-input {
+    flex: 1; min-width: 200px; background: var(--page); border: 1px solid var(--border);
+    color: var(--text-primary); border-radius: var(--radius-sm); padding: 6px 10px; font-size: var(--text-base); font-family: inherit;
+  }
+  table.renames { width: 100%; border-collapse: collapse; }
+  table.renames th, table.renames td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--gridline); font-size: var(--text-base); vertical-align: middle; }
+  table.renames th { color: var(--text-muted); font-weight: 600; font-size: var(--text-xs); }
+  table.renames td.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  table.renames td.actions { white-space: nowrap; text-align: right; }
+  table.renames .btn + .btn { margin-left: 6px; }
+  table.renames tr.decided td { color: var(--text-muted); }
+  /* The words/numbers that differ between two names — what the reviewer
+     actually needs to look at ("200MG" vs "800MG"). */
+  .name-diff { background: color-mix(in srgb, var(--status-warning) 28%, transparent); color: var(--text-primary); border-radius: 3px; padding: 0 2px; }
+  .renames-empty { color: var(--text-muted); padding: 14px 0; }
+  @media (max-width: 760px) { table.renames { min-width: 640px; } }
   table.problem-files th, table.problem-files td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--gridline); font-size: var(--text-base); }
   table.problem-files th { color: var(--text-muted); font-weight: 600; font-size: var(--text-xs); }
 
@@ -114,6 +133,16 @@
     <div id="health-problems"></div>
     <div id="health-churn"></div>
     <div id="health-quality"></div>
+  </div>
+
+  <div class="card" id="card-renames" style="display:none">
+    <h2>Renamed items</h2>
+    <div class="card-sub">The same item can show up under a new name from one month to the next — tagged "(NON)",
+      "ZZ" or "(RECALL)", respelled, or renamed in your POS system. When the app is sure it's the same item, its history is
+      joined up automatically. When it isn't sure, it asks you here. Nothing is changed in your imported reports, and every
+      decision can be undone.</div>
+    <div class="tabs" id="renames-tabs"></div>
+    <div id="renames-body"></div>
   </div>
 
   <div class="card">
@@ -282,8 +311,10 @@ async function loadImportHealth() {
     // longer counts as an outstanding issue — that's what dismissing means.
     const qualityDismissed = quality.total > 0 && isQualityDismissed(quality);
     const hasQuality = quality.total > 0 && !qualityDismissed;
+    const renames = data.renames || { merged: 0, pending: 0 };
+    const hasPendingRenames = renames.pending > 0;
     const issueCount = data.missing_months.length + data.coverage_gaps.length + data.problem_files.length
-      + (hasChurn ? 1 : 0) + (hasUnmatched ? 1 : 0) + (hasQuality ? 1 : 0);
+      + (hasChurn ? 1 : 0) + (hasUnmatched ? 1 : 0) + (hasQuality ? 1 : 0) + (hasPendingRenames ? 1 : 0);
 
     // The card only takes up space on the page when there's actually
     // something to look at — same conditional-hide pattern as the Data
@@ -297,7 +328,7 @@ async function loadImportHealth() {
     pill.classList.remove('health-pill-clickable');
     pill.removeAttribute('role');
     pill.removeAttribute('tabindex');
-    if (!hasGaps && !hasProblems && !hasChurn && !hasUnmatched && !hasQuality) {
+    if (!hasGaps && !hasProblems && !hasChurn && !hasUnmatched && !hasQuality && !hasPendingRenames) {
       pill.style.background = getComputedStyle(document.documentElement).getPropertyValue('--status-good').trim();
       pill.textContent = '✓ Import health good';
       healthCard.style.display = 'none';
@@ -357,12 +388,28 @@ async function loadImportHealth() {
     }
 
     const churnEl = document.getElementById('health-churn');
+    // Renamed items first: they explain (and remove) what would otherwise
+    // show up below as "new" and "vanished".
+    const renameRows = [];
+    if (hasPendingRenames) {
+      renameRows.push(`
+        <div class="health-row health-warn">
+          <span class="icon">⚠</span>
+          <span>${fmtNum(renames.pending)} possible renamed item${renames.pending === 1 ? '' : 's'} waiting for your review.</span>
+          <a href="#card-renames" class="jump-to-renames" style="margin-left:4px">Review →</a>
+        </div>`);
+    }
+    if (renames.merged > 0) {
+      renameRows.push(`<div class="health-row health-muted"><span class="icon">·</span>
+        <span>${fmtNum(renames.merged)} renamed item${renames.merged === 1 ? '' : 's'} recognised and joined up with their history —
+        not counted as new or vanished. <a href="#card-renames" class="jump-to-renames">See them →</a></span></div>`);
+    }
     if (!churn.previous_period_end) {
       // Fewer than two reports imported yet — nothing to compare, so say
       // nothing rather than a premature "all clear."
-      churnEl.innerHTML = '';
+      churnEl.innerHTML = renameRows.join('');
     } else {
-      const rows = [];
+      const rows = [...renameRows];
       if (!hasChurn) {
         const renameNote = churn.renames_total
           ? ` (${churn.renames_total} name${churn.renames_total === 1 ? '' : 's'} renamed in your item list — nothing to check)`
@@ -423,6 +470,10 @@ async function loadImportHealth() {
         details.scrollIntoView({ behavior: 'smooth', block: 'start' });
       });
     }
+    churnEl.querySelectorAll('.jump-to-renames').forEach(a => a.addEventListener('click', ev => {
+      ev.preventDefault();
+      document.getElementById('card-renames').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }));
 
     const qualityEl = document.getElementById('health-quality');
     if (qualityDismissed) {
@@ -473,7 +524,197 @@ async function loadImportHealth() {
     healthCard.style.display = 'none';
   }
 }
+
+// ---------- renamed items (see identity.py) ----------
+// Three lists from /api/sku-merges: suggestions waiting for a decision,
+// merges already applied, and every stored decision. A decision is saved
+// the moment it's clicked and the row updates in place — reviewing 50 in a
+// sitting shouldn't mean a full reload after each one. The lists themselves
+// are refetched when switching tabs (that's when the server re-groups).
+const RENAMES_PAGE = 50;
+const renames = { tab: null, data: null, shown: RENAMES_PAGE, filter: '', local: new Map() };
+const REASON_LABELS = {
+  'same item code': 'Same item code in your item list',
+  'pharmacy tag': 'Only a tag differs — (NON), ZZ or (RECALL)',
+  'same spelling, stock carried over': 'Same spelling, stock carried over',
+  'approved': 'You approved it',
+};
+function renameKey(a, b) { return a + '\u0000' + b; }
+// "2026-04-01" -> "Apr 2026", read straight off the text rather than via
+// new Date() — the column only needs the month, and this way it can't shift
+// to the previous day/month in a timezone behind UTC.
+function fmtMonth(iso) {
+  const [y, m] = String(iso || '').split('-');
+  const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return names[Number(m) - 1] ? `${names[Number(m) - 1]} ${y}` : '–';
+}
+
+// The name with every word/number that isn't in the other name highlighted —
+// "DOLO <mark>200MG</mark>" next to "DOLO <mark>800MG</mark>".
+function nameDiffHtml(name, other) {
+  const counts = new Map();
+  (other.toUpperCase().match(/[A-Z0-9.%]+/g) || []).forEach(w => counts.set(w, (counts.get(w) || 0) + 1));
+  return String(name).replace(/[A-Za-z0-9.%]+|[^A-Za-z0-9.%]+/g, chunk => {
+    if (!/[A-Za-z0-9]/.test(chunk)) return escapeHtml(chunk);
+    const w = chunk.toUpperCase();
+    const left = counts.get(w) || 0;
+    if (left > 0) { counts.set(w, left - 1); return escapeHtml(chunk); }
+    return `<span class="name-diff">${escapeHtml(chunk)}</span>`;
+  });
+}
+
+async function loadRenames() {
+  const card = document.getElementById('card-renames');
+  if (!card) return;
+  try {
+    renames.data = await api('/api/sku-merges');
+  } catch (e) {
+    card.style.display = '';
+    document.getElementById('renames-body').innerHTML = `<div class="renames-empty">Couldn't load renamed items — ${escapeHtml(e.message)}</div>`;
+    return;
+  }
+  renames.local.clear();
+  const d = renames.data;
+  card.style.display = (d.merged.length + d.pending.length + d.decided.length) ? '' : 'none';
+  if (!renames.tab) renames.tab = d.pending.length ? 'pending' : 'merged';
+  renderRenames();
+}
+
+function renamesRowsFor(tab) {
+  const d = renames.data;
+  const list = tab === 'pending' ? d.pending : tab === 'merged' ? d.merged : d.decided;
+  const q = renames.filter.trim().toLowerCase();
+  if (!q) return list;
+  return list.filter(r => [r.old_name, r.new_name, r.brand, r.display_name].some(v => v && String(v).toLowerCase().includes(q)));
+}
+
+function renderRenames() {
+  const d = renames.data;
+  const pendingLeft = d.pending.filter(r => !renames.local.has(renameKey(r.old_name, r.new_name))).length;
+  const tabs = [
+    { key: 'pending', label: `To review (${fmtNum(pendingLeft)})` },
+    { key: 'merged', label: `Merged automatically (${fmtNum(d.merged.length)})` },
+    { key: 'decided', label: `Your decisions (${fmtNum(d.decided.length)})` },
+  ];
+  const tabsEl = document.getElementById('renames-tabs');
+  tabsEl.innerHTML = tabs.map(t => `<button class="tab-btn${t.key === renames.tab ? ' active' : ''}" data-key="${t.key}" type="button">${t.label}</button>`).join('');
+  tabsEl.querySelectorAll('.tab-btn').forEach(b => b.addEventListener('click', () => {
+    renames.tab = b.dataset.key; renames.shown = RENAMES_PAGE; renames.filter = '';
+    document.getElementById('renames-body').innerHTML = '<div class="renames-empty">Loading…</div>';
+    loadRenames();
+    loadImportHealth();
+  }));
+
+  const rows = renamesRowsFor(renames.tab);
+  const page = rows.slice(0, renames.shown);
+  const intro = {
+    pending: 'Each pair below: one name disappeared while holding stock, and in the very next report a new name in the same brand opened with exactly that stock. Highlighted words differ between the two — a different strength, pack size or variant means a different item. Decide each one; you can stop any time and pick up where you left off.',
+    merged: 'Joined up automatically because the app is sure they\'re the same item. If one is wrong, mark it "Not the same item" and it\'s split apart everywhere.',
+    decided: 'Everything you\'ve decided, newest first. Undo puts a pair back to what the automatic rules say.',
+  }[renames.tab];
+  const empty = {
+    pending: 'Nothing waiting for review.',
+    merged: 'No renamed items have been joined up automatically.',
+    decided: 'You haven\'t made any decisions yet.',
+  }[renames.tab];
+
+  let table;
+  if (!rows.length) {
+    table = `<div class="renames-empty">${renames.filter ? 'No matches.' : empty}</div>`;
+  } else if (renames.tab === 'pending') {
+    table = `<table class="renames"><thead><tr><th>Brand</th><th>Old name</th><th>New name</th><th>Renamed</th><th class="num">Stock carried</th><th></th></tr></thead><tbody>${page.map((r, i) => {
+      const done = renames.local.get(renameKey(r.old_name, r.new_name));
+      return `<tr data-i="${i}"${done ? ' class="decided"' : ''}>
+        <td>${escapeHtml(r.brand || '–')}</td>
+        <td>${nameDiffHtml(r.old_name, r.new_name)}</td>
+        <td>${nameDiffHtml(r.new_name, r.old_name)}</td>
+        <td>${escapeHtml(fmtMonth(r.period_start))}</td>
+        <td class="num">${fmtNum(r.stock)}</td>
+        <td class="actions">${done
+          ? `${done === 'merge' ? 'Merged ✓' : 'Kept separate'} <button class="btn btn-sm" data-act="undo" type="button">Undo</button>`
+          : `<button class="btn btn-sm btn-primary" data-act="merge" type="button">Same item — merge</button><button class="btn btn-sm" data-act="separate" type="button">Not the same</button>`}</td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
+  } else if (renames.tab === 'merged') {
+    table = `<table class="renames"><thead><tr><th>Name</th><th>Same item as</th><th>How</th><th></th></tr></thead><tbody>${page.map((r, i) => {
+      const done = renames.local.get(renameKey(r.old_name, r.new_name));
+      return `<tr data-i="${i}"${done ? ' class="decided"' : ''}>
+        <td>${nameDiffHtml(r.old_name, r.new_name)}</td>
+        <td>${nameDiffHtml(r.new_name, r.old_name)}</td>
+        <td>${escapeHtml(REASON_LABELS[r.reason] || r.reason)}</td>
+        <td class="actions">${done
+          ? `Split <button class="btn btn-sm" data-act="undo" type="button">Undo</button>`
+          : `<button class="btn btn-sm" data-act="separate" type="button">Not the same item</button>`}</td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
+  } else {
+    table = `<table class="renames"><thead><tr><th>Name</th><th>Other name</th><th>Your decision</th><th>When</th><th></th></tr></thead><tbody>${page.map((r, i) => {
+      const undone = renames.local.get(renameKey(r.old_name, r.new_name)) === 'undone';
+      const label = r.decision === 'merge' ? 'Same item' : 'Different items';
+      const note = r.effect && r.effect !== 'merged' && r.effect !== 'kept separate' ? ` <span style="color:var(--text-muted)">(${escapeHtml(r.effect)})</span>` : '';
+      return `<tr data-i="${i}"${undone ? ' class="decided"' : ''}>
+        <td>${escapeHtml(r.old_name)}</td>
+        <td>${escapeHtml(r.new_name)}</td>
+        <td>${label}${note}</td>
+        <td>${fmtDateTime(r.decided_at) || '–'}</td>
+        <td class="actions">${undone ? 'Undone' : '<button class="btn btn-sm" data-act="undo" type="button">Undo</button>'}</td>
+      </tr>`;
+    }).join('')}</tbody></table>`;
+  }
+
+  const more = rows.length > page.length
+    ? `<div style="margin-top:10px"><button class="btn btn-sm" id="renames-more" type="button">Show next ${fmtNum(Math.min(RENAMES_PAGE, rows.length - page.length))} (${fmtNum(rows.length - page.length)} more)</button></div>`
+    : '';
+  const body = document.getElementById('renames-body');
+  body.innerHTML = `
+    <div class="card-sub" style="margin:10px 0 0">${intro}</div>
+    <div class="renames-controls">
+      <input class="search-input" type="search" id="renames-filter" placeholder="Search names or brand…" value="${escapeHtml(renames.filter)}" />
+      <a class="btn btn-sm" href="/api/sku-merges/export.csv" download>⭳ Export CSV</a>
+    </div>
+    <div class="table-x">${table}</div>${more}`;
+
+  const filterEl = document.getElementById('renames-filter');
+  filterEl.addEventListener('input', () => {
+    renames.filter = filterEl.value; renames.shown = RENAMES_PAGE;
+    const pos = filterEl.selectionStart;
+    renderRenames();
+    const again = document.getElementById('renames-filter');
+    again.focus(); again.setSelectionRange(pos, pos);
+  });
+  document.getElementById('renames-more')?.addEventListener('click', () => { renames.shown += RENAMES_PAGE; renderRenames(); });
+  body.querySelectorAll('button[data-act]').forEach(btn => btn.addEventListener('click', () => {
+    const r = page[Number(btn.closest('tr').dataset.i)];
+    decideRename(r, btn.dataset.act, btn);
+  }));
+}
+
+async function decideRename(r, act, btn) {
+  const key = renameKey(r.old_name, r.new_name);
+  btn.disabled = true;
+  try {
+    if (act === 'undo') {
+      await api('/api/sku-merges/undo', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ old_name: r.old_name, new_name: r.new_name }),
+      });
+      if (renames.tab === 'decided') renames.local.set(key, 'undone'); else renames.local.delete(key);
+    } else {
+      await api('/api/sku-merges', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ old_name: r.old_name, new_name: r.new_name, decision: act }),
+      });
+      renames.local.set(key, act);
+    }
+    renderRenames();
+  } catch (e) {
+    toast(e.message, 'error');
+    btn.disabled = false;
+  }
+}
+
 loadImportHealth();
+loadRenames();
 
 // The collapsed "Item code list" section: whether a catalog has been
 // imported, and — if so — which currently-stocked SKUs don't match anything
@@ -536,6 +777,7 @@ async function refreshReportsFromServer() {
   const data = await api('/api/reports');
   REPORTS = data.reports;
   loadImportHealth();
+  loadRenames();
   if (document.getElementById('reports-groups')) {
     renderReportsTable();
   } else if (REPORTS.length) {
