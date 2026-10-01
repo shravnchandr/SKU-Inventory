@@ -51,6 +51,62 @@ Rules that keep this safe:
 | Everything up to and including the file-lock/update-banner work (see below) | before this log | `fdb32bd` | `baseline-2026-10-01` | — |
 | Value segments download: "Download all (Excel)" + per-tile CSV on the Dashboard | 2026-10-01 | `bc383a8` | `merged/value-segment-export` | No |
 | History popups: month-by-month chart + table for each status row and the on-hand KPI tiles | 2026-10-01 | `e333cec` | `merged/status-history` | No |
+| Fix: rescan uses the most recently saved of two overlapping files, and stops re-importing both every time | 2026-10-01 | `7f73c05` | `merged/partial-period-supersede` | No schema change (see below) |
+| Browser-tab icon (no more /favicon.ico 404) | 2026-10-01 | `cb3e0c2` | `merged/favicon` | No |
+| Every page fits phone width (top bar wraps; status rows stack; Reports tables scroll in place) | 2026-10-01 | `485fd79` | `merged/mobile-nav` | No |
+| Data-quality warning on Reports can be dismissed | 2026-10-01 | `e47e0ce` | `merged/dismiss-data-quality` | No |
+
+### Dismissible data-quality warning — `feature/dismiss-data-quality`
+
+Recall: `git revert -m 1 e47e0ce`
+
+- Reports → Import health → data-quality warning gets **Dismiss**. It
+  collapses to "N data quality issues dismissed · Show" and stops counting
+  toward the header's issue badge; if it was the only issue, the badge turns
+  green and reads "show dismissed" (click to bring it back).
+- Remembered per browser (`localStorage` key `inv-quality-dismissed`), keyed
+  to a fingerprint of the exact issue set from `/api/import-health`
+  (`quality_issues.fingerprint`). A later import with a different set of
+  issues brings the warning back automatically.
+- Touches: `webapp.py` (`quality_issues_fingerprint`), `templates/reports.html`;
+  tests in `tests/test_quality_dismiss.py`.
+
+### Phone-width layout — `fix/mobile-nav`
+
+Recall: `git revert -m 1 485fd79`
+
+- Below 760px: the top bar wraps (brand + icon-only theme toggle, then nav,
+  then full-width search) and isn't sticky; Dashboard status rows stack;
+  Trends leaderboard hover tooltips are hidden; Reports tables scroll
+  sideways inside a `.table-x` box. Desktop layout unchanged.
+- Checked at 360/390/768/1280px on all four pages: no sideways page scroll.
+- Touches: `templates/base.html`, `dashboard.html`, `trends.html`, `reports.html` (CSS,
+  plus the `.table-x` wrapper around Reports tables).
+
+### Browser-tab icon — `fix/favicon`
+
+Recall: `git revert -m 1 cb3e0c2`
+
+- Inline SVG (stacked boxes, accent teal) served at `/favicon.svg` and
+  `/favicon.ico`, linked from `base.html`. Touches: `webapp.py`, `base.html`;
+  tests in `tests/test_favicon.py`.
+
+### Overlapping files on rescan — `fix/partial-period-supersede`
+
+Recall: `git revert -m 1 7f73c05`
+
+- "Newest upload wins" for overlapping periods now means most recently
+  **saved** file (mtime), not alphabetically last. The older file is
+  recorded in `watched_files` as status `superseded` (shown under Import
+  health with the reason) and skipped on later scans; removing the winning
+  report lets it back in. An already-wrong database repairs itself on the
+  next rescan.
+- DB: no schema change. Writes `superseded` rows to `watched_files`; code
+  from before this fix just treats those as unchanged files, so a revert is
+  safe.
+- Touches: `db.py` (`find_newer_overlapping_source`), `sync.py`, `main.py`,
+  `webapp.py`, `templates/reports.html` (rescan toast); tests in
+  `tests/test_sync_overlapping_files.py`.
 
 ### History popups — `feature/status-history`
 

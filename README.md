@@ -87,6 +87,10 @@ stop the app. Everything from here on is point-and-click:
   changing a threshold redraws the whole history; the first few months
   after your earliest import are marked "≈" (not enough history yet to
   measure sales pace or dead stock properly).
+- **Data quality warning** (on the Reports page) — can be **dismissed** once
+  you've seen it. It stays hidden until a later import turns up a
+  *different* set of issues, then comes back on its own. "Show" brings it
+  back any time.
 - **Search box** (top of every page) — looks up any SKU across your entire
   current catalog, not just within one action-list tab. The dashboard's
   per-tab search boxes only cover out-of-stock/low-stock/dead-stock/
@@ -125,6 +129,11 @@ for the sales-pace trend).
 
 ## Fixing a bad upload
 
+- **Two files whose dates overlap** (e.g. a mid-month export Aug 1–9 next
+  to a later Aug 1–17 export of the same month) — the one saved most
+  recently is used. The other is listed under Import health as
+  "superseded", with the reason, and left alone on later rescans; delete it
+  from `uploads/` if you no longer need it.
 - **Two files for the same month** — can't happen silently. Reports have a
   hard uniqueness constraint on the period, so uploading (or rescanning) a
   second file covering an already-imported period is rejected with a clear
