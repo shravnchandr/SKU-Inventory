@@ -1023,6 +1023,7 @@ def create_app(
             unchanged=result.unchanged,
             duplicate_period=result.duplicate_period,
             filename_reused=result.filename_reused,
+            superseded=result.superseded,
             errors=result.errors,
         )
 
