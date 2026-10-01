@@ -91,6 +91,9 @@
   .stat-tile-clickable { cursor: pointer; transition: background var(--transition-fast), outline-color var(--transition-fast); outline: 2px solid transparent; outline-offset: -2px; }
   .stat-tile-clickable:hover { background: var(--page); }
   .stat-tile-clickable.active { outline-color: var(--accent); background: var(--surface-2); }
+  .card-head-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+  .segment-detail-controls { display: flex; justify-content: flex-end; margin: 8px 0; }
+  .segment-detail-controls a { text-decoration: none; border-color: var(--border); }
   /* .segment-policy is defined once in base.html — shared with the SKU
      detail modal, which can open from any page, not just this one. */
 </style>
@@ -119,7 +122,10 @@
   </div>
 
   <div class="card" id="card-value-segments">
-    <h2>Value segments (ABC × movement)</h2>
+    <div class="card-head-row">
+      <h2>Value segments (ABC × movement)</h2>
+      <a class="btn" id="value-segments-download" href="{{ url_for('api_value_segments_export_xlsx') }}" download>⭳ Download all (Excel)</a>
+    </div>
     <div class="card-sub" id="value-segments-sub"></div>
     <div id="value-segment-groups"></div>
     <div id="value-segment-detail"></div>
@@ -448,6 +454,7 @@ TAB_DEFS.forEach(t => renderTable(t.key));
 (function () {
   const segments = DATA.value_segments;
   if (!segments || !segments.length) return;
+  const SEGMENT_CSV_URL = {{ url_for('api_value_segment_export_csv') | tojson }};
   const skus = DATA.value_segment_skus || [];
   const th = DATA.meta.thresholds;
   document.getElementById('value-segments-sub').textContent =
@@ -481,6 +488,9 @@ TAB_DEFS.forEach(t => renderTable(t.key));
       : `<tr><td colspan="4" style="text-align:center;color:var(--text-muted);padding:20px">No SKUs in this segment right now.</td></tr>`;
     detailEl.innerHTML = `
       <div class="segment-policy"><strong>${meta.tier_label} · ${meta.movement_label}:</strong> ${escapeHtml(meta.policy)}</div>
+      <div class="segment-detail-controls">
+        <a class="tab-btn" href="${SEGMENT_CSV_URL}?tier=${encodeURIComponent(tier)}&movement=${encodeURIComponent(movement)}" download>⭳ Export CSV (${fmtNum(rows.length)} SKUs)</a>
+      </div>
       <div class="table-scroll">
         <table class="data-table">
           <thead><tr><th>Brand</th><th>SKU</th><th>Value (₹)</th><th>Days cover</th></tr></thead>

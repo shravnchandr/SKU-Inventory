@@ -48,6 +48,7 @@ from .dashboard import (
     _segment_policy,
     build_payload,
 )
+from .excel_export import value_segment_columns, value_segment_rows, value_segments_workbook
 from .parser import parse_item_list, parse_stock_statement
 from .sync import DEFAULT_UPLOADS_DIR, fy_folder, sync_folder
 from .update_check import UpdateStatus, check_for_update
@@ -732,6 +733,46 @@ def create_app(
                 ("value", "Value"),
             ],
             "sku_changes.csv",
+        )
+
+    @app.get("/api/value-segments/export.xlsx")
+    def api_value_segments_export_xlsx():
+        _, summary, thresholds = get_current_data()
+        if summary is None:
+            return jsonify(error="No reports imported yet — nothing to export."), 404
+        content = value_segments_workbook(
+            summary, thresholds["value_tier_a_pct"], thresholds["value_tier_b_pct"]
+        )
+        filename = f"value_segments_{summary.meta.latest_period_end.isoformat()}.xlsx"
+        return Response(
+            content,
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    @app.get("/api/value-segments/export.csv")
+    def api_value_segment_export_csv():
+        # One tile's SKU list, same columns as that tile's sheet in the
+        # .xlsx above. Server-side rather than the client-side exportCsv the
+        # action lists use: the page's own value_segment_skus payload only
+        # carries the four columns the tile table shows, not the extra ones
+        # a download is for.
+        tier = request.args.get("tier", "")
+        movement = request.args.get("movement", "")
+        if tier not in SEGMENT_TIER_LABELS or movement not in SEGMENT_MOVEMENT_LABELS:
+            return jsonify(error="Unknown value segment."), 400
+        _, summary, _ = get_current_data()
+        if summary is None:
+            return jsonify(error="No reports imported yet — nothing to export."), 404
+        rows = value_segment_rows(summary, tier, movement)
+        rows = rows.astype(object).where(rows.notna(), None)  # a missing brand is "", not "nan"
+        filename = (
+            f"value_segment_{tier}_{movement}_{summary.meta.latest_period_end.isoformat()}.csv"
+        )
+        return _csv_response(
+            rows.to_dict(orient="records"),
+            value_segment_columns(summary.meta.trailing_days),
+            filename,
         )
 
     @app.get("/settings")
