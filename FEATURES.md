@@ -10,8 +10,9 @@ The pharmacy's copy runs whatever is on GitHub's `main`: `update.bat`/
 
 1. Build it on its own branch, `feature/<name>`, branched from `main`.
 2. Merge with `git merge --no-ff feature/<name>` (always a real merge commit,
-   never a fast-forward) and tag that merge commit with the same name:
-   `git tag -a feature/<name> -m "<one line>"`.
+   never a fast-forward) and tag that merge commit `merged/<name>`:
+   `git tag -a merged/<name> -m "<one line>"`. (Not the branch's own name —
+   a tag and a branch sharing a name makes git call it "ambiguous".)
 3. Add a row to the table below with the merge hash.
 
 **To recall a broken feature** while everything else keeps working:
@@ -26,8 +27,11 @@ again, because git considers those commits already in `main`. Revert the revert
 first, then merge the fix on top:
 
 ```bash
+git switch feature/<name>          # or recreate it: git switch -c feature/<name> merged/<name>^2
+# ...commit the fix on the branch...
+git switch main
 git revert <hash of the "Revert ..." commit>
-git merge --no-ff feature/<name>   # with the fix committed on that branch
+git merge --no-ff feature/<name>
 ```
 
 Rules that keep this safe:
@@ -45,7 +49,28 @@ Rules that keep this safe:
 | Feature | Merged | Merge commit | Tag | DB change |
 |---|---|---|---|---|
 | Everything up to and including the file-lock/update-banner work (see below) | before this log | `fdb32bd` | `baseline-2026-10-01` | — |
-| Value segments download: "Download all (Excel)" + per-tile CSV on the Dashboard | 2026-10-01 | `bc383a8` | `feature/value-segment-export` | No |
+| Value segments download: "Download all (Excel)" + per-tile CSV on the Dashboard | 2026-10-01 | `bc383a8` | `merged/value-segment-export` | No |
+| History popups: month-by-month chart + table for each status row and the on-hand KPI tiles | 2026-10-01 | `e333cec` | `merged/status-history` | No |
+
+### History popups — `feature/status-history`
+
+Recall: `git revert -m 1 e333cec`
+
+- Dashboard → each status row (Out of stock … Returned) has a **History**
+  button; the **Total SKUs**, **Inventory value on hand** and **Units on
+  hand** tiles are clickable. Each opens a popup: chart(s) plus a by-month
+  table with month-over-month change.
+- Each month's point is `summarize_history()` re-run over only the reports
+  imported by then (as if that month were the latest import), judged with
+  *today's* Settings. The latest point is identical to the dashboard by
+  construction (tested). Early months with under `trailing_days_target` days
+  of sales or under `dead_stock_days` of history are marked "≈ approximate".
+- One point per calendar month (that month's latest report). Computed on
+  first request, then cached until data or Settings change (~3s cold for
+  17 months on a Mac; the page pre-warms it in the background).
+- Endpoint: `GET /api/status-history`.
+- Touches: `analysis.py` (new `status_history`, existing code unchanged),
+  `webapp.py`, `templates/dashboard.html`; tests in `tests/test_status_history.py`.
 
 ### Value segments download — `feature/value-segment-export`
 

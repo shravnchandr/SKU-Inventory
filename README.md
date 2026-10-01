@@ -76,7 +76,17 @@ stop the app. Everything from here on is point-and-click:
   tile for a short recommendation and its SKU list; see "How the numbers are
   calculated" below for exactly how tiers are assigned. A SKU's segment also
   shows up in its own detail panel wherever you open one (search, an
-  action-list row, a brand's SKU list).
+  action-list row, a brand's SKU list). **Download all (Excel)** saves the
+  whole card as one workbook — a Summary sheet plus one sheet per tile —
+  and each tile's list has its own **Export CSV**.
+- **History** (on the Dashboard) — the **History** button on each stock
+  status row (out of stock, low, dead, overstock, healthy, returned) shows
+  how that number moved month by month, as a chart and a table. The Total
+  SKUs, Inventory value and Units on hand tiles open the same kind of
+  history when clicked. Every month is judged with *today's* Settings, so
+  changing a threshold redraws the whole history; the first few months
+  after your earliest import are marked "≈" (not enough history yet to
+  measure sales pace or dead stock properly).
 - **Search box** (top of every page) — looks up any SKU across your entire
   current catalog, not just within one action-list tab. The dashboard's
   per-tab search boxes only cover out-of-stock/low-stock/dead-stock/
