@@ -45,6 +45,21 @@ Rules that keep this safe:
 | Feature | Merged | Merge commit | Tag | DB change |
 |---|---|---|---|---|
 | Everything up to and including the file-lock/update-banner work (see below) | before this log | `fdb32bd` | `baseline-2026-10-01` | — |
+| Value segments download: "Download all (Excel)" + per-tile CSV on the Dashboard | 2026-10-01 | `bc383a8` | `feature/value-segment-export` | No |
+
+### Value segments download — `feature/value-segment-export`
+
+Recall: `git revert -m 1 bc383a8`
+
+- Dashboard → Value segments card: **Download all (Excel)** gives a workbook
+  with a Summary sheet (9 tiles: SKUs, value, recommendation) plus one sheet
+  per segment. The selected tile's list has its own **Export CSV**.
+- Download columns: Brand, SKU, Closing stock, Value, Sold (trailing window),
+  Days of cover, Days since activity.
+- Endpoints: `GET /api/value-segments/export.xlsx`,
+  `GET /api/value-segments/export.csv?tier=A|B|C&movement=fast|slow|non_moving`.
+- Touches: `excel_export.py`, `webapp.py`, `templates/dashboard.html`;
+  tests in `tests/test_value_segment_export.py`.
 
 ### Baseline (before this log)
 
