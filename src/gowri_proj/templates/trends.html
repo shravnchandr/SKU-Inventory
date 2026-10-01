@@ -30,6 +30,10 @@
     opacity: 0; pointer-events: none; transition: opacity 0.1s; z-index: 5;
   }
   .bar-row:hover .bar-tooltip { opacity: 1; }
+  /* Phone width: the (invisible until hover) tooltip still takes up layout
+     width past the screen edge, scrolling the page sideways — and phones
+     have no hover to show it anyway. The row's own label and value stay. */
+  @media (max-width: 760px) { .bar-tooltip { display: none; } }
   .bar-row-clickable {
     cursor: pointer; border-radius: var(--radius-sm); margin: 0 -6px; padding-left: 6px; padding-right: 6px;
     transition: background var(--transition-fast);
