@@ -50,6 +50,14 @@
   .health-row .icon { flex: 0 0 auto; }
   .health-ok { color: var(--status-good); }
   .health-warn { color: var(--status-warning); }
+  .health-muted { color: var(--text-muted); }
+  .health-row .health-action {
+    margin-left: auto; flex: 0 0 auto; border: 1px solid var(--border); background: var(--surface-1);
+    color: var(--text-secondary); border-radius: var(--radius-sm); padding: 4px 10px;
+    font-size: var(--text-sm); font-family: inherit; cursor: pointer;
+  }
+  .health-row .health-action:hover { background: var(--surface-2); color: var(--text-primary); }
+  #health-pill.health-pill-clickable { cursor: pointer; }
   table.problem-files th, table.problem-files td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--gridline); font-size: var(--text-base); }
   table.problem-files th { color: var(--text-muted); font-weight: 600; font-size: var(--text-xs); }
 
@@ -235,6 +243,21 @@ function renderReportsTable() {
 }
 renderReportsTable();
 
+// ---------- data-quality dismissal ----------
+// Remembered in this browser (like the theme choice), keyed to the exact set
+// of issues it was dismissed for (the server's fingerprint) — the same
+// approach as the update banner's dismiss in base.html. A later import that
+// changes the set of issues brings the warning back on its own; dismissing
+// today's 7 never hides tomorrow's new one.
+const QUALITY_DISMISS_KEY = 'inv-quality-dismissed';
+function isQualityDismissed(quality) {
+  return !!quality.fingerprint && safeStorage.get(QUALITY_DISMISS_KEY) === quality.fingerprint;
+}
+function setQualityDismissed(quality, dismissed) {
+  safeStorage.set(QUALITY_DISMISS_KEY, dismissed ? quality.fingerprint : '');
+  loadImportHealth();
+}
+
 async function loadImportHealth() {
   const healthCard = document.getElementById('health-card');
   const pill = document.getElementById('health-pill');
@@ -255,7 +278,10 @@ async function loadImportHealth() {
     const hasChurn = (churn.new_total + churn.vanished_total) > 0;
     const hasUnmatched = unmatched.total > 0;
     const quality = data.quality_issues || { total: 0, items: [] };
-    const hasQuality = quality.total > 0;
+    // A dismissed warning still renders (collapsed, with a way back) but no
+    // longer counts as an outstanding issue — that's what dismissing means.
+    const qualityDismissed = quality.total > 0 && isQualityDismissed(quality);
+    const hasQuality = quality.total > 0 && !qualityDismissed;
     const issueCount = data.missing_months.length + data.coverage_gaps.length + data.problem_files.length
       + (hasChurn ? 1 : 0) + (hasUnmatched ? 1 : 0) + (hasQuality ? 1 : 0);
 
@@ -263,10 +289,29 @@ async function loadImportHealth() {
     // something to look at — same conditional-hide pattern as the Data
     // Quality card below. Most months this'll just be the pill.
     pill.style.display = '';
+    // Reset anything a previous render's "show dismissed" state left on the
+    // pill — this function re-runs after every dismiss/undo.
+    pill.onclick = null;
+    pill.onkeydown = null;
+    pill.title = '';
+    pill.classList.remove('health-pill-clickable');
+    pill.removeAttribute('role');
+    pill.removeAttribute('tabindex');
     if (!hasGaps && !hasProblems && !hasChurn && !hasUnmatched && !hasQuality) {
       pill.style.background = getComputedStyle(document.documentElement).getPropertyValue('--status-good').trim();
       pill.textContent = '✓ Import health good';
       healthCard.style.display = 'none';
+      // The dismissed warning was the only thing left, so the whole card is
+      // hidden — the pill becomes the way to bring it back.
+      if (qualityDismissed) {
+        pill.textContent = '✓ Import health good · show dismissed';
+        pill.classList.add('health-pill-clickable');
+        pill.setAttribute('role', 'button');
+        pill.setAttribute('tabindex', '0');
+        pill.title = 'Show the dismissed data quality warning again';
+        pill.onclick = () => setQualityDismissed(quality, false);
+        pill.onkeydown = e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setQualityDismissed(quality, false); } };
+      }
     } else {
       pill.style.background = getComputedStyle(document.documentElement).getPropertyValue('--status-warning').trim();
       pill.textContent = `⚠ ${issueCount} issue${issueCount === 1 ? '' : 's'}`;
@@ -380,16 +425,26 @@ async function loadImportHealth() {
     }
 
     const qualityEl = document.getElementById('health-quality');
-    if (!hasQuality) {
+    if (qualityDismissed) {
+      qualityEl.innerHTML = `
+        <div class="health-row health-muted">
+          <span class="icon">⚠</span>
+          <span>${quality.total} data quality issue${quality.total === 1 ? '' : 's'} dismissed.</span>
+          <button class="health-action" id="quality-undismiss" type="button">Show</button>
+        </div>`;
+      document.getElementById('quality-undismiss').addEventListener('click', () => setQualityDismissed(quality, false));
+    } else if (!hasQuality) {
       qualityEl.innerHTML = `<div class="health-row health-ok"><span class="icon">✓</span> No data quality issues found in the imported files.</div>`;
     } else {
       qualityEl.innerHTML = `
         <div class="health-row health-warn">
           <span class="icon">⚠</span>
-          ${quality.total} issue${quality.total === 1 ? '' : 's'} found — an impossible or unbalanced value
+          <span>${quality.total} issue${quality.total === 1 ? '' : 's'} found — an impossible or unbalanced value
           (e.g. opening + purchased − sold not matching the reported closing stock; one source row can have
           more than one issue, so this counts issues, not rows) — the source file, not this app, has the
-          wrong number; nothing here has been corrected or excluded from your totals.
+          wrong number; nothing here has been corrected or excluded from your totals.</span>
+          ${quality.fingerprint ? `<button class="health-action" id="quality-dismiss" type="button"
+            title="Hide this warning. It comes back on its own if a later import finds different issues.">Dismiss</button>` : ''}
         </div>
         <div class="table-x"><table class="problem-files" style="width:100%; margin-top:8px">
           <thead><tr><th>Brand</th><th>SKU</th><th>Period</th><th>Issue</th></tr></thead>
@@ -403,6 +458,7 @@ async function loadImportHealth() {
           </tbody>
         </table></div>
         ${quality.items.length < quality.total ? `<div class="card-sub" style="margin-top:6px">(showing the first ${quality.items.length} of ${quality.total})</div>` : ''}`;
+      document.getElementById('quality-dismiss')?.addEventListener('click', () => setQualityDismissed(quality, true));
     }
 
     renderCatalogCard(data.item_catalog, unmatched);

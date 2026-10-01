@@ -7,6 +7,8 @@ upload/refresh/remove actions so the pages update without a full reload.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import secrets
@@ -310,6 +312,19 @@ def _csv_response(rows: list[dict], columns: list[tuple[str, str]], filename: st
         mimetype="text/csv",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+def quality_issues_fingerprint(issues: list[dict]) -> str | None:
+    """A short, stable ID for one exact set of data-quality issues — what the
+    Reports page's "Dismiss" remembers. Keyed on the *set* (sorted, so the
+    order issues happen to be listed in can't change it), not a count: a
+    later import that fixes one issue and introduces a different one has
+    the same count but must still bring the warning back.
+    """
+    if not issues:
+        return None
+    keys = sorted((str(i["brand"]), str(i["sku"]), i["period_end"], i["issue"]) for i in issues)
+    return hashlib.sha256(json.dumps(keys).encode()).hexdigest()[:16]
 
 
 def csv_cell(value: object) -> str:
@@ -756,7 +771,14 @@ def create_app(
             # find_data_quality_issues) — capped defensively, same reasoning
             # as unmatched_skus's display limit; "total" still reflects the
             # true count so the headline can't understate the problem.
-            quality_issues={"total": len(quality_issues), "items": quality_issues[:100]},
+            # "fingerprint" identifies this exact set of issues (all of
+            # them, not just the 100 shown) so a dismissal can be scoped to
+            # it — see quality_issues_fingerprint.
+            quality_issues={
+                "total": len(quality_issues),
+                "items": quality_issues[:100],
+                "fingerprint": quality_issues_fingerprint(quality_issues),
+            },
         )
 
     @app.get("/api/unmatched-skus/export")
