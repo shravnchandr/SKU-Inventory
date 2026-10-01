@@ -58,6 +58,17 @@
   table.unmatched-skus th, table.unmatched-skus td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--gridline); font-size: var(--text-base); }
   table.unmatched-skus th { color: var(--text-muted); font-weight: 600; font-size: var(--text-xs); }
   table.unmatched-skus td.num { text-align: right; font-variant-numeric: tabular-nums; }
+  /* Each table sits in a .table-x box that scrolls sideways on its own —
+     invisible on desktop, where they already fit. At phone width they get a
+     floor instead of being squeezed to fit: left alone, the browser crushes
+     the longest-text column (a rejected file's Detail) to a letter per line
+     rather than scrolling. */
+  .table-x { overflow-x: auto; }
+  @media (max-width: 760px) {
+    table.problem-files { min-width: 600px; }
+    table.unmatched-skus { min-width: 460px; }
+    table.reports-table :is(th, td) { white-space: nowrap; }
+  }
 </style>
 {% endblock %}
 
@@ -195,7 +206,7 @@ function renderReportsTable() {
           <span class="disclosure-icon" aria-hidden="true">▸</span>
         </summary>
         <div class="card-collapsible-body">
-          <table class="reports-table">
+          <div class="table-x"><table class="reports-table">
             <thead>
               <tr><th>Period</th><th class="num">Days</th><th class="num">SKUs</th><th>Source file</th><th>Imported</th><th></th></tr>
             </thead>
@@ -209,7 +220,7 @@ function renderReportsTable() {
                 <td style="text-align:right"><button class="btn btn-sm btn-danger" data-remove="${r.id}" type="button">Remove</button></td>
               </tr>`).join('')}
             </tbody>
-          </table>
+          </table></div>
         </div>
       </details>`;
   }).join('');
@@ -287,7 +298,7 @@ async function loadImportHealth() {
     } else {
       problemsEl.innerHTML = `
         <div class="detail-section-title">Files rejected on the last scan</div>
-        <table class="problem-files" style="width:100%">
+        <div class="table-x"><table class="problem-files" style="width:100%">
           <thead><tr><th>File</th><th>Issue</th><th>Detail</th><th>When</th></tr></thead>
           <tbody>${data.problem_files.map(p => `
             <tr>
@@ -297,7 +308,7 @@ async function loadImportHealth() {
               <td>${fmtDateTime(p.checked_at) || '–'}</td>
             </tr>`).join('')}
           </tbody>
-        </table>`;
+        </table></div>`;
     }
 
     const churnEl = document.getElementById('health-churn');
@@ -343,7 +354,7 @@ async function loadImportHealth() {
               <div style="text-align:right;margin-bottom:8px">
                 <a class="btn btn-sm" href="/api/sku-churn/export" download>⭳ Export CSV${churnShownNote}</a>
               </div>
-              <table class="unmatched-skus" style="width:100%">
+              <div class="table-x"><table class="unmatched-skus" style="width:100%">
                 <thead><tr><th>Change</th><th>Brand</th><th>SKU</th><th class="num">Closing stock</th><th class="num">Value</th></tr></thead>
                 <tbody>${churnRows.map(r => `
                   <tr>
@@ -354,7 +365,7 @@ async function loadImportHealth() {
                     <td class="num">₹${r.value.toLocaleString('en-IN')}</td>
                   </tr>`).join('')}
                 </tbody>
-              </table>
+              </table></div>
             </div>
           </details>`);
       }
@@ -380,7 +391,7 @@ async function loadImportHealth() {
           more than one issue, so this counts issues, not rows) — the source file, not this app, has the
           wrong number; nothing here has been corrected or excluded from your totals.
         </div>
-        <table class="problem-files" style="width:100%; margin-top:8px">
+        <div class="table-x"><table class="problem-files" style="width:100%; margin-top:8px">
           <thead><tr><th>Brand</th><th>SKU</th><th>Period</th><th>Issue</th></tr></thead>
           <tbody>${quality.items.map(i => `
             <tr>
@@ -390,7 +401,7 @@ async function loadImportHealth() {
               <td>${escapeHtml(i.issue)}</td>
             </tr>`).join('')}
           </tbody>
-        </table>
+        </table></div>
         ${quality.items.length < quality.total ? `<div class="card-sub" style="margin-top:6px">(showing the first ${quality.items.length} of ${quality.total})</div>` : ''}`;
     }
 
@@ -449,7 +460,7 @@ function renderCatalogCard(catalog, unmatched) {
         <div style="text-align:right;margin-bottom:8px">
           <a class="btn btn-sm" href="/api/unmatched-skus/export" download>⭳ Export CSV${shownNote ? ` (all ${total.toLocaleString('en-IN')})` : ''}</a>
         </div>
-        <table class="unmatched-skus" style="width:100%">
+        <div class="table-x"><table class="unmatched-skus" style="width:100%">
           <thead><tr><th>Brand</th><th>SKU</th><th class="num">Closing stock</th><th class="num">Value</th></tr></thead>
           <tbody>${items.map(u => `
             <tr>
@@ -459,7 +470,7 @@ function renderCatalogCard(catalog, unmatched) {
               <td class="num">₹${u.value.toLocaleString('en-IN')}</td>
             </tr>`).join('')}
           </tbody>
-        </table>
+        </table></div>
       </div>
     </details>`;
   initCollapsibles();

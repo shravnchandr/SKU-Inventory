@@ -166,6 +166,28 @@
   }
   .theme-toggle:hover { color: var(--text-primary); }
 
+  /* Phone width: one row of brand + nav + search + toggle needs ~700px, so
+     the page scrolled sideways. Wrap into rows instead — brand and toggle,
+     then nav, then a full-width search — and stop sticking to the top,
+     since a three-row bar pinned there would eat a third of the screen.
+     Desktop layout above is untouched. */
+  @media (max-width: 760px) {
+    .topbar { position: static; flex-wrap: wrap; gap: 10px; padding: 10px 16px; }
+    .topbar .brand { flex: 1 1 0; min-width: 0; }
+    .topbar .brand-name { overflow: hidden; text-overflow: ellipsis; }
+    .theme-toggle { order: 1; }
+    #theme-toggle-label { display: none; }
+    .topbar nav { order: 2; flex: 1 1 100%; overflow-x: auto; }
+    .topbar nav a { padding: 6px 10px; font-size: var(--text-base); white-space: nowrap; }
+    .topbar-search { order: 3; flex: 1 1 100%; }
+    .wrap { padding: 16px; }
+    /* .wrap is a flex column, and a flex item won't shrink below its
+       content's width by default — so one wide table inside a card would
+       stretch the whole card (and page) past the screen instead of
+       scrolling inside its own box. */
+    .wrap > * { min-width: 0; }
+  }
+
   /* ---------- update-available banner ---------- */
   /* Calm, not urgent — this is "there's news," not "go fix something now"
      (that register is reserved for the Dashboard's move-strip-urgent), so
@@ -417,7 +439,7 @@
 <body>
   <div id="nav-progress"></div>
   <div class="topbar">
-    <div class="brand"><span class="dot"></span>{{ company or "Inventory" }}</div>
+    <div class="brand"><span class="dot"></span><span class="brand-name">{{ company or "Inventory" }}</span></div>
     <nav>
       <a href="{{ url_for('dashboard') }}" class="{{ 'active' if active_page == 'dashboard' else '' }}">Dashboard</a>
       <a href="{{ url_for('trends') }}" class="{{ 'active' if active_page == 'trends' else '' }}">Trends</a>

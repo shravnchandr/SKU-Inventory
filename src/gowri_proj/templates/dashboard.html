@@ -86,6 +86,17 @@
   .history-note { font-size: var(--text-sm); color: var(--text-muted); margin: 10px 0 0; }
   .history-table td.history-delta { color: var(--text-muted); }
 
+  /* Phone width: the row's fixed-width name/numbers columns plus the bar's
+     240px basis don't fit, so stack it — name, numbers and History on top,
+     the bar under them, then the blurb. */
+  @media (max-width: 760px) {
+    .status-item { flex-wrap: wrap; row-gap: 6px; }
+    .status-name { width: auto; flex: 1 1 auto; }
+    .status-nums { width: auto; }
+    .status-track { order: 1; flex: 1 1 100%; }
+    .status-blurb { order: 2; flex: 1 1 100%; }
+  }
+
   .tab-panel { display: none; }
   .tab-panel.active { display: block; }
 
