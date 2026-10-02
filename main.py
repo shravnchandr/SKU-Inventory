@@ -23,7 +23,7 @@ import sqlite3
 import webbrowser
 from pathlib import Path
 
-from src.gowri_proj import db
+from src.gowri_proj import db, identity
 from src.gowri_proj.analysis import (
     STATUS_ORDER,
     THRESHOLD_DAYS_MAX,
@@ -203,7 +203,11 @@ def _build_dashboard(args: argparse.Namespace) -> None:
         if not db.has_data(conn):
             print("No reports imported yet. Run `uv run main.py refresh` first.")
             return
-        all_entries = db.load_all_entries(conn)
+        # Same name unification as the web app (identity.py), so a renamed
+        # item's history counts as one item here too.
+        raw_entries = db.load_all_entries(conn)
+        codes, decisions = db.load_identity_inputs(conn)
+        all_entries = identity.apply(raw_entries, identity.resolve(raw_entries, codes, decisions))
         thresholds = _resolve_thresholds(conn, args)
 
     summary = summarize_history(

@@ -610,7 +610,26 @@ def summarize_history(
     # wasn't moving. That's a different signal than "sold out, might need
     # restocking" (out_of_stock) even though both end up at zero on the
     # shelf — see _status()'s docstring.
-    merged["is_returned"] = (merged["trailing_demand"] == 0) & (merged["trailing_other_issue"] > 0)
+    #
+    # "Nothing sold" is judged since the item got its *current* name. For an
+    # item never renamed that's the same thing; it matters for one joined up
+    # from earlier names (identity.apply, which keeps each row's original
+    # name in source_sku). The pharmacy tags a non-moving item "(NON)" and
+    # then sends it back: its sales from before the tag would otherwise
+    # count, turning a deliberate return into "out of stock — restock?".
+    returned_demand = merged["trailing_demand"]
+    if "source_sku" in trailing_entries.columns:
+        latest_rows = trailing_entries[trailing_entries["report_id"] == latest_report_id]
+        current_name = latest_rows.set_index("sku")["source_sku"]
+        te = trailing_entries
+        under_current_name = te[te["source_sku"] == te["sku"].map(current_name)]
+        demand = (
+            (under_current_name["sales"] + under_current_name["sales_free"])
+            .groupby(under_current_name["sku"])
+            .sum()
+        )
+        returned_demand = merged["sku"].map(demand).fillna(0.0)
+    merged["is_returned"] = (returned_demand == 0) & (merged["trailing_other_issue"] > 0)
     # Vectorized rather than merged.apply(..., axis=1) — a row-wise Python
     # loop over every current SKU (15k+ today) was the remaining hot spot
     # in this module once _compute_dead_stock got bounded (see
@@ -847,13 +866,21 @@ def status_history(
     return points
 
 
-def search_skus(enriched: pd.DataFrame, query: str, limit: int = 50) -> list[dict]:
+def search_skus(
+    enriched: pd.DataFrame,
+    query: str,
+    limit: int = 50,
+    aliases: dict[str, list[str]] | None = None,
+) -> list[dict]:
     """Case-insensitive substring search across every *current* SKU — brand
     or name — not scoped to any one status bucket. Unlike the per-tab search
     boxes on the dashboard (which only filter within whichever action-list
     table is already embedded on the page — out-of-stock/low-stock/
     dead-stock/overstock), this covers every SKU including "healthy" ones,
     which aren't embedded anywhere on the page at all.
+
+    ``aliases`` (current name -> earlier names, from identity.Resolution)
+    makes an item findable by a name it no longer goes by.
     """
     q = query.strip().lower()
     if len(q) < 2:
@@ -861,6 +888,9 @@ def search_skus(enriched: pd.DataFrame, query: str, limit: int = 50) -> list[dic
     mask = enriched["brand"].str.lower().str.contains(q, na=False, regex=False) | enriched[
         "sku"
     ].str.lower().str.contains(q, na=False, regex=False)
+    if aliases:
+        by_old_name = {name for name, old in aliases.items() if any(q in o.lower() for o in old)}
+        mask |= enriched["sku"].isin(by_old_name)
     matches = enriched[mask].sort_values("value", ascending=False).head(limit)
     return [
         {

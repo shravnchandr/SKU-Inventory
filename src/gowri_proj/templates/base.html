@@ -896,9 +896,16 @@ function openSkuDetail(brand, sku) {
       ? `<div class="segment-policy"><strong>${escapeHtml(data.value_segment.tier_label)} · ${escapeHtml(data.value_segment.movement_label)}:</strong> ${escapeHtml(data.value_segment.policy)}</div>`
       : '';
 
+    // Earlier names this item's history was joined up from (identity.py) —
+    // so "why does this have 11 months of history when the name is new?"
+    // answers itself.
+    const aliases = (data.aliases || []).length
+      ? `<div class="detail-eyebrow" style="margin:-8px 0 12px">Also listed as: ${data.aliases.map(escapeHtml).join(' · ')}</div>`
+      : '';
     body.innerHTML = `
       <div class="detail-eyebrow">${escapeHtml(brand)}</div>
       <div class="detail-title">${escapeHtml(sku)} ${c ? statusBadgeHtml(c.status) : ''}</div>
+      ${aliases}
       ${kpis}
       ${segment}
       <div class="detail-section-title">Stock &amp; sales over time</div>
