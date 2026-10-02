@@ -126,7 +126,7 @@ def test_failed_item_list_save_does_not_record_its_date(client, tmp_path):
     _write_item_list(tmp_path / "il.xlsx", ITEMS, as_of="09/08/2026")
     _post_file(c, app, "/api/upload-item-list", tmp_path / "il.xlsx", "il.xlsx")
     _write_item_list(tmp_path / "il2.xlsx", ITEMS, as_of="20/08/2026")
-    with patch("src.gowri_proj.webapp.os.replace", side_effect=PermissionError("locked")):
+    with patch("src.gowri_proj.web_helpers.os.replace", side_effect=PermissionError("locked")):
         assert (
             _post_file(
                 c, app, "/api/upload-item-list", tmp_path / "il2.xlsx", "il2.xlsx"

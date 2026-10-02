@@ -183,7 +183,7 @@ def test_a_failed_file_replace_rolls_back_the_already_committed_db_import(client
     # The DB import (which happens first) succeeds normally; only the
     # os.replace() that follows it is made to fail, simulating a disk-full/
     # permissions failure on the file write.
-    with patch("src.gowri_proj.webapp.os.replace", side_effect=OSError("no space left on device")):
+    with patch("src.gowri_proj.web_helpers.os.replace", side_effect=OSError("no space left on device")):
         resp = _upload(client, new_path)
     assert resp.status_code == 500
     assert "catalog was not changed" in resp.get_json()["error"]
