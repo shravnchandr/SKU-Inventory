@@ -20,7 +20,7 @@ def _entries(rows: list[dict]) -> pd.DataFrame:
     df = pd.DataFrame(rows)
     df["period_end"] = pd.to_datetime(df["period_end"])
     df["brand"] = df.get("brand", "SOME BRAND")
-    for col in ("purchase", "sales", "sales_free"):
+    for col in ("purchase", "purchase_free", "other_receipt", "other_issue", "sales", "sales_free"):
         if col not in df.columns:
             df[col] = 0.0
     return df
