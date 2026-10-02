@@ -60,7 +60,7 @@ def test_replace_retries_past_a_transient_permission_error(tmp_path):
             raise PermissionError(5, "Access is denied")
         return real_replace(a, b)
 
-    with patch("src.gowri_proj.webapp.os.replace", side_effect=flaky_replace):
+    with patch("src.gowri_proj.web_helpers.os.replace", side_effect=flaky_replace):
         _replace_with_retry(src, dest, attempts=5, delay=0)
 
     assert calls["n"] == 3
@@ -74,7 +74,7 @@ def test_replace_gives_up_and_raises_a_plain_message_after_repeated_failures(tmp
     dest.write_text("old")
 
     with patch(
-        "src.gowri_proj.webapp.os.replace",
+        "src.gowri_proj.web_helpers.os.replace",
         side_effect=PermissionError(5, "Access is denied"),
     ), pytest.raises(OSError, match="Windows wouldn't let this file be saved"):
         _replace_with_retry(src, dest, attempts=3, delay=0)
@@ -175,7 +175,7 @@ def test_upload_endpoint_reports_a_clean_message_when_stat_stays_locked(tmp_path
     with (
         app.test_client() as c,
         patch.object(Path, "stat", always_locked),
-        patch("src.gowri_proj.webapp.time.sleep"),
+        patch("src.gowri_proj.web_helpers.time.sleep"),
         open(path, "rb") as f,
     ):
         resp = c.post(
@@ -203,10 +203,10 @@ def test_upload_endpoint_surfaces_a_clean_message_instead_of_a_bare_500(tmp_path
     with (
         app.test_client() as c,
         patch(
-            "src.gowri_proj.webapp.os.replace",
+            "src.gowri_proj.web_helpers.os.replace",
             side_effect=PermissionError(5, "Access is denied"),
         ),
-        patch("src.gowri_proj.webapp.time.sleep"),
+        patch("src.gowri_proj.web_helpers.time.sleep"),
         open(path, "rb") as f,
     ):
         resp = c.post(

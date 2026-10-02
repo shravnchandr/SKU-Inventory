@@ -12,9 +12,10 @@ from datetime import date
 import pandas as pd
 import pytest
 
-from src.gowri_proj import db, webapp
+from src.gowri_proj import db
 from src.gowri_proj.analysis import STATUS_ORDER, status_history, summarize_history
 from src.gowri_proj.parser import TIDY_COLUMNS, ReportMeta
+from src.gowri_proj.routes import inventory
 from src.gowri_proj.webapp import create_app
 
 MONTHS = [
@@ -170,8 +171,8 @@ def test_endpoint_computes_once_then_recomputes_after_new_data(client, monkeypat
     c, app = client
     _seed(app.config["DB_PATH"], MONTHS[:4])
     calls = []
-    real = webapp.status_history
-    monkeypatch.setattr(webapp, "status_history", lambda *a, **k: calls.append(1) or real(*a, **k))
+    real = inventory.status_history
+    monkeypatch.setattr(inventory, "status_history", lambda *a, **k: calls.append(1) or real(*a, **k))
 
     first = c.get("/api/status-history").get_json()
     c.get("/api/status-history")
