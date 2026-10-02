@@ -237,6 +237,62 @@ def is_stock_statement(path: str) -> bool:
     return raw is not None and _scan_banner(raw, _PERIOD_RE)[2] is not None
 
 
+def _item_list_rows(raw: pd.DataFrame) -> pd.DataFrame:
+    """The item rows of a raw item list, one per code, with the brand each
+    sits under. Column operations, not a row loop (~20,000 rows; see
+    _stock_statement_rows).
+
+    Layout, after the header row ("Code" in IL_COL_CODE): a brand header is
+    a row with only the code-ish column filled (e.g. "AKSIGEN" on its own),
+    followed by that brand's items, each with a code *and* a product name —
+    a blank Product cell is what marks a header, not a blank Code cell.
+
+    A row with a product name but no code is skipped: an item can only be
+    matched by its code. (It used to get the code "nan", so two of them in
+    one list would have blocked the whole upload on a duplicate key.)
+    """
+    h = _first_header_row(raw, IL_COL_CODE, "Code")
+    if h is None:
+        return pd.DataFrame(columns=ITEM_LIST_COLUMNS)
+    # As with the stock statement's header check: verify a couple more cells
+    # are where expected before trusting fixed column positions.
+    header = raw.iloc[h]
+    if str(header[IL_COL_PRODUCT]).strip() != "Product" or str(header[IL_COL_HSN]).strip() != "HSN":
+        raise ValueError(
+            "Found the 'Code' header but the other columns don't match the "
+            f"expected layout (expected 'Product' in column {IL_COL_PRODUCT + 1} "
+            f"and 'HSN' in column {IL_COL_HSN + 1}, got {header[IL_COL_PRODUCT]!r} "
+            f"and {header[IL_COL_HSN]!r}). The export template may have changed — "
+            "check the file before re-importing."
+        )
+    body = raw.iloc[h + 1 :]
+    code = body[IL_COL_CODE]
+    code_text = _stripped_text(code)
+    has_code = (code_text.notna() & (code_text != "")) | (code_text.isna() & code.notna())
+    names = _stripped_text(body[IL_COL_PRODUCT])
+    has_name = names.notna() & (names != "")
+    code_str = code.map(lambda v: str(v).strip())
+    is_brand = has_code & ~has_name
+    brand = code_str.where(is_brand).ffill()
+    items = has_code & has_name
+    strip_if_text = lambda col: col.map(lambda v: v.strip() if isinstance(v, str) else v)
+    rows = body[items]
+    return pd.DataFrame(
+        {
+            "code": code_str[items],
+            "brand": brand[items].astype(object).where(brand[items].notna(), None),
+            "product_name": names[items],
+            "packing": strip_if_text(rows[IL_COL_PACKING]),
+            "mrp": rows[IL_COL_MRP],
+            "by_rate": rows[IL_COL_BY_RATE],
+            "tax_pct": rows[IL_COL_TAX_PCT],
+            "hsn": strip_if_text(rows[IL_COL_HSN]),
+            "long_name": strip_if_text(rows[IL_COL_LONG_NAME]),
+        },
+        columns=ITEM_LIST_COLUMNS,
+    ).reset_index(drop=True)
+
+
 def parse_item_list(path: str, sheet_name: str = "Sheet2") -> tuple[pd.DataFrame, ItemListMeta]:
     """Parse the "item list" POS export into a tidy, one-row-per-code DataFrame.
 
@@ -250,72 +306,81 @@ def parse_item_list(path: str, sheet_name: str = "Sheet2") -> tuple[pd.DataFrame
     _require_min_columns(raw, IL_COL_LONG_NAME + 1, "item list")
     meta = parse_item_list_meta(raw)
 
-    rows: list[dict] = []
-    current_brand: str | None = None
-    started = False
-
-    for _, row in raw.iterrows():
-        code = row[IL_COL_CODE]
-        has_code = code.strip() != "" if isinstance(code, str) else pd.notna(code)
-
-        if not started:
-            if str(code).strip() == "Code":
-                # As with parse_stock_statement's header check: verify a
-                # couple more cells are where expected before trusting fixed
-                # column positions for every row after this one.
-                if (
-                    str(row[IL_COL_PRODUCT]).strip() != "Product"
-                    or str(row[IL_COL_HSN]).strip() != "HSN"
-                ):
-                    raise ValueError(
-                        "Found the 'Code' header but the other columns don't match the "
-                        f"expected layout (expected 'Product' in column {IL_COL_PRODUCT + 1} "
-                        f"and 'HSN' in column {IL_COL_HSN + 1}, got {row[IL_COL_PRODUCT]!r} "
-                        f"and {row[IL_COL_HSN]!r}). The export template may have changed — "
-                        "check the file before re-importing."
-                    )
-                started = True
-            continue
-
-        name_cell = row[IL_COL_PRODUCT]
-        has_name = isinstance(name_cell, str) and name_cell.strip() != ""
-        if not has_code and not has_name:
-            continue  # blank separator row
-
-        if not has_name:
-            # A brand/category header row: only the code-ish column (the
-            # row's sole populated cell) is filled — e.g. "AKSIGEN" on its
-            # own row, followed by that brand's items each with a real code
-            # *and* a product name. A blank Product cell is what marks it as
-            # a header rather than an item, not a blank Code cell (both
-            # header and item rows have that column filled).
-            current_brand = str(code).strip()
-            continue
-
-        rows.append(
-            {
-                "code": str(code).strip(),
-                "brand": current_brand,
-                "product_name": str(name_cell).strip(),
-                "packing": str(row[IL_COL_PACKING]).strip()
-                if isinstance(row[IL_COL_PACKING], str)
-                else row[IL_COL_PACKING],
-                "mrp": row[IL_COL_MRP],
-                "by_rate": row[IL_COL_BY_RATE],
-                "tax_pct": row[IL_COL_TAX_PCT],
-                "hsn": str(row[IL_COL_HSN]).strip()
-                if isinstance(row[IL_COL_HSN], str)
-                else row[IL_COL_HSN],
-                "long_name": str(row[IL_COL_LONG_NAME]).strip()
-                if isinstance(row[IL_COL_LONG_NAME], str)
-                else row[IL_COL_LONG_NAME],
-            }
-        )
-
-    df = pd.DataFrame(rows, columns=ITEM_LIST_COLUMNS)
+    df = _item_list_rows(raw)
     numeric_cols = ["mrp", "by_rate", "tax_pct"]
     df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors="coerce")
     return df, meta
+
+
+def _stripped_text(col: pd.Series) -> pd.Series:
+    """Each cell stripped if it's text, NaN otherwise (numbers, blanks)."""
+    is_text = col.map(lambda v: isinstance(v, str))
+    return col.where(is_text).str.strip()
+
+
+def _first_header_row(raw: pd.DataFrame, column: int, label: str) -> int | None:
+    """Position of the first row whose cell in ``column`` reads ``label``."""
+    hits = (raw[column].map(lambda v: str(v).strip()) == label).to_numpy()
+    return int(hits.argmax()) if hits.any() else None
+
+
+def _stock_statement_rows(raw: pd.DataFrame) -> pd.DataFrame:
+    """The SKU rows of a raw stock statement, one per SKU, with the brand
+    each sits under — numbers still raw (the caller coerces them).
+
+    Works on whole columns rather than row by row: the export is a sheet of
+    ~15,000 rows, and a Python loop over it was ~5 seconds per file (most of
+    an upload's wait, and ~90 of a fresh 17-file rescan's ~108 seconds).
+
+    Layout, after the header row ("Opening Stock" in COL_OPENING): a
+    brand/category name on a row with every number blank, then that brand's
+    SKU rows, a "Sub Total" row, a blank separator row, the next brand.
+    """
+    h = _first_header_row(raw, COL_OPENING, "Opening Stock")
+    if h is None:
+        return pd.DataFrame(columns=TIDY_COLUMNS)
+    # COL_OPENING matching is necessary but not sufficient — the numeric
+    # columns are trusted by fixed position from here on (COL_SALES,
+    # COL_VALUE, etc.), so if the export template ever adds/reorders a
+    # column downstream of "Opening Stock", this one check would still pass
+    # while every number read after it is silently wrong (e.g. a "Sales"
+    # figure actually read from a "Free" column). Checking a couple more
+    # header cells catches that instead of parsing garbage quietly.
+    header = raw.iloc[h]
+    if str(header[COL_SALES]).strip() != "Sales" or str(header[COL_VALUE]).strip() != "Value":
+        raise ValueError(
+            "Found the 'Opening Stock' header but the other columns don't match the "
+            f"expected layout (expected 'Sales' in column {COL_SALES + 1} and 'Value' in "
+            f"column {COL_VALUE + 1}, got {header[COL_SALES]!r} and {header[COL_VALUE]!r}). "
+            "The export template may have changed — check the file before re-importing, "
+            "since the numbers would otherwise be read from the wrong columns silently."
+        )
+    body = raw.iloc[h + 1 :]
+    names = _stripped_text(body[COL_NAME])
+    keep = names.notna() & (names != "") & ~names.isin(["Sub Total", "Grand Total"])
+    body, names = body[keep], names[keep]
+    # A row with a name and every number blank is a brand/category header;
+    # each SKU row belongs to the last one above it.
+    is_brand = body[NUMERIC_COLS].isna().all(axis=1)
+    brand = names.where(is_brand).ffill()
+    skus = body[~is_brand]
+    out = pd.DataFrame(
+        {
+            "brand": brand[~is_brand].astype(object).where(brand[~is_brand].notna(), None),
+            "sku": names[~is_brand],
+            "opening_stock": skus[COL_OPENING],
+            "purchase": skus[COL_PURCHASE],
+            "purchase_free": skus[COL_PURCHASE_FREE],
+            "other_receipt": skus[COL_OTHER_RECEIPT],
+            "sales": skus[COL_SALES],
+            "sales_free": skus[COL_SALES_FREE],
+            "other_issue": skus[COL_OTHER_ISSUE],
+            "closing_stock": skus[COL_CLOSING_STOCK],
+            "value": skus[COL_VALUE],
+        },
+        columns=TIDY_COLUMNS,
+    )
+    return out.reset_index(drop=True)
 
 
 def parse_stock_statement(path: str) -> tuple[pd.DataFrame, ReportMeta]:
@@ -324,67 +389,7 @@ def parse_stock_statement(path: str) -> tuple[pd.DataFrame, ReportMeta]:
     _require_min_columns(raw, COL_VALUE + 1, "stock statement")
     meta = parse_meta(raw)
 
-    rows: list[dict] = []
-    current_brand: str | None = None
-    started = False  # becomes True once we've passed the header row
-
-    for _, row in raw.iterrows():
-        name = row[COL_NAME]
-        numeric_vals = row[NUMERIC_COLS]
-        has_name = isinstance(name, str) and name.strip() != ""
-        all_numeric_blank = numeric_vals.isna().all()
-
-        if not started:
-            if str(row[COL_OPENING]).strip() == "Opening Stock":
-                # COL_OPENING matching is necessary but not sufficient — the
-                # numeric columns are trusted by fixed position from here on
-                # (COL_SALES, COL_VALUE, etc.), so if the export template
-                # ever adds/reorders a column downstream of "Opening Stock",
-                # this one check would still pass while every number read
-                # after it is silently wrong (e.g. a "Sales" figure actually
-                # read from a "Free" column). Checking a couple more header
-                # cells catches that instead of parsing garbage quietly.
-                if str(row[COL_SALES]).strip() != "Sales" or str(row[COL_VALUE]).strip() != "Value":
-                    raise ValueError(
-                        "Found the 'Opening Stock' header but the other columns don't match the "
-                        f"expected layout (expected 'Sales' in column {COL_SALES + 1} and 'Value' in "
-                        f"column {COL_VALUE + 1}, got {row[COL_SALES]!r} and {row[COL_VALUE]!r}). "
-                        "The export template may have changed — check the file before re-importing, "
-                        "since the numbers would otherwise be read from the wrong columns silently."
-                    )
-                started = True
-            continue
-
-        if not has_name:
-            continue  # blank separator row
-
-        name = name.strip()
-
-        if name in ("Sub Total", "Grand Total"):
-            continue
-
-        if all_numeric_blank:
-            # A brand/category header row.
-            current_brand = name
-            continue
-
-        rows.append(
-            {
-                "brand": current_brand,
-                "sku": name,
-                "opening_stock": row[COL_OPENING],
-                "purchase": row[COL_PURCHASE],
-                "purchase_free": row[COL_PURCHASE_FREE],
-                "other_receipt": row[COL_OTHER_RECEIPT],
-                "sales": row[COL_SALES],
-                "sales_free": row[COL_SALES_FREE],
-                "other_issue": row[COL_OTHER_ISSUE],
-                "closing_stock": row[COL_CLOSING_STOCK],
-                "value": row[COL_VALUE],
-            }
-        )
-
-    df = pd.DataFrame(rows, columns=TIDY_COLUMNS)
+    df = _stock_statement_rows(raw)
     numeric_cols = TIDY_COLUMNS[2:]
     df[numeric_cols] = df[numeric_cols].apply(pd.to_numeric, errors="coerce").fillna(0.0)
 

@@ -243,16 +243,16 @@ def sync_folder(conn: sqlite3.Connection, folder: str) -> SyncResult:
                 result.unchanged.append(rel_name)
             continue
 
-        # The POS item list lives in uploads/ too (the Reports page saves it
-        # there). It's not a stock statement, so don't report it as a broken
-        # one.
-        if is_item_list(str(path)):
-            _record_item_list(conn, result, folder_path, path, rel_name, filesize, mtime)
-            continue
-
         try:
             df, meta = parse_stock_statement(str(path))
         except Exception as e:  # noqa: BLE001 — surfaced per-file, sync must not abort on one bad file
+            # The POS item list lives in uploads/ too (the Reports page saves
+            # it there). It's not a stock statement, so don't report it as a
+            # broken one. Only checked once a file has failed to read as a
+            # statement — checking every file up front read each one twice.
+            if is_item_list(str(path)):
+                _record_item_list(conn, result, folder_path, path, rel_name, filesize, mtime)
+                continue
             result.errors.append((rel_name, str(e)))
             db.upsert_watched_file(conn, rel_name, filesize, mtime, None, "error", str(e))
             continue
