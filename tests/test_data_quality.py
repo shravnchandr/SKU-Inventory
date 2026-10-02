@@ -89,3 +89,26 @@ def test_a_row_can_have_multiple_issues_at_once():
     kinds = {i["issue"] for i in issues}
     assert "Negative closing stock" in kinds
     assert "Negative opening stock" in kinds
+
+
+def test_issue_shows_the_name_in_the_source_file_not_a_merged_name():
+    # "X TAB" (Jan, negative sales) was later tagged "X TAB (NON)"; joined up,
+    # its rows all carry the newer name — but the bad row is in January's
+    # file under "X TAB", and that's what someone checking the file needs.
+    from src.gowri_proj import identity
+    from src.gowri_proj.analysis import find_data_quality_issues
+
+    def row(rid, start, end, sku, sales, closing):
+        return {"report_id": rid, "period_start": pd.Timestamp(start), "period_end": pd.Timestamp(end),
+                "period_days": 31, "company": "T", "location": "T", "brand": "B", "sku": sku,
+                "opening_stock": closing + sales, "purchase": 0.0, "purchase_free": 0.0, "other_receipt": 0.0,
+                "sales": sales, "sales_free": 0.0, "other_issue": 0.0, "closing_stock": closing, "value": 10.0}  # fmt: skip
+
+    e = pd.DataFrame([row(1, "2026-01-01", "2026-01-31", "X TAB", -2.0, 5.0),
+                      row(2, "2026-02-01", "2026-02-28", "X TAB (NON)", 0.0, 5.0)])  # fmt: skip
+    joined = identity.apply(e, identity.resolve(e))
+    assert set(joined["sku"]) == {"X TAB (NON)"}
+    issues = find_data_quality_issues(joined)
+    assert [(i["sku"], i["issue"]) for i in issues] == [
+        ("X TAB", "Negative sales (possibly a return)")
+    ]
