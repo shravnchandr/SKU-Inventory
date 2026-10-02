@@ -78,6 +78,7 @@ Rules that keep this safe:
 | Fix: stable order for equal values (no reshuffle between runs) | 2026-10-01 | `1817cf3` | `merged/stable-tie-order` | No |
 | Fix: calendar dates shown from their text (no day-early dates) | 2026-10-01 | `23fbfe9` | `merged/date-display` | No |
 | Faster imports: parsers work on whole columns (~5x faster rescans) | 2026-10-01 | `1f225a1` | `merged/fast-parsers` | No |
+| Tests no longer write into the app's real logs/error.log | 2026-10-01 | `55acb28` | `merged/tests-isolated-logs` | No |
 
 ### Code audit, 2026-10-01 — restructure, 8 fixes, faster imports
 
