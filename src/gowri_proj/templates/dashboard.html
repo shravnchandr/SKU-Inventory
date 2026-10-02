@@ -139,7 +139,10 @@
   <div class="kpi-row" id="kpi-row"></div>
 
   <div class="card" id="action-hero">
-    <h2>Action lists</h2>
+    <div class="card-head-row">
+      <h2>Action lists</h2>
+      <a class="btn" id="action-lists-download" href="{{ url_for('api_action_lists_export_xlsx') }}" download>⭳ Download all lists (Excel)</a>
+    </div>
     <div class="card-sub">Search across brand or SKU name; click a column to sort.</div>
     <div class="status-list" id="status-tabs"></div>
     <div id="tab-panels"></div>

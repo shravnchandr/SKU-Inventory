@@ -79,9 +79,22 @@ def export_excel(summary: InventorySummary, out_path: str) -> Path:
     """Write one workbook with a sheet per action list, plus a Summary sheet."""
     path = Path(out_path)
     path.parent.mkdir(parents=True, exist_ok=True)
+    _write_action_lists(summary, path)
+    return path
 
+
+def action_lists_workbook(summary: InventorySummary) -> bytes:
+    """The same workbook as export_excel, built in memory for the Dashboard's
+    "Download all lists" button — no temp file for Windows antivirus to
+    lock (see value_segments_workbook)."""
+    buf = io.BytesIO()
+    _write_action_lists(summary, buf)
+    return buf.getvalue()
+
+
+def _write_action_lists(summary: InventorySummary, target) -> None:
     display_columns = _display_columns(summary.meta.trailing_days)
-    with pd.ExcelWriter(path, engine="openpyxl") as writer:
+    with pd.ExcelWriter(target, engine="openpyxl") as writer:
         _summary_frame(summary).to_excel(writer, sheet_name="Summary", index=False)
 
         lists = {
@@ -101,8 +114,6 @@ def export_excel(summary: InventorySummary, out_path: str) -> Path:
                     (len(str(c.value)) for c in col_cells if c.value is not None), default=10
                 )
                 ws.column_dimensions[col_cells[0].column_letter].width = min(length + 2, 40)
-
-    return path
 
 
 def value_segment_columns(trailing_days: int) -> list[tuple[str, str]]:
