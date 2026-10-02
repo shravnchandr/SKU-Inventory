@@ -1333,6 +1333,7 @@ def create_app(
             duplicate_period=result.duplicate_period,
             filename_reused=result.filename_reused,
             superseded=result.superseded,
+            item_lists=result.item_lists,
             errors=result.errors,
         )
 

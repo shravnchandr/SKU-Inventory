@@ -129,6 +129,8 @@ def _report_sync(result: SyncResult) -> None:
             f"  ~ skipped {filename} ({period}): overlaps {newer}, a more recently saved file, "
             f"which is used instead"
         )
+    for filename in result.item_lists:
+        print(f"  · {filename}: the POS item list, not a stock statement (left as is)")
     for filename, error in result.errors:
         print(f"  ✗ skipped {filename}: {error}")
     if result.unchanged:
@@ -138,6 +140,7 @@ def _report_sync(result: SyncResult) -> None:
         or result.duplicate_period
         or result.filename_reused
         or result.superseded
+        or result.item_lists
         or result.errors
         or result.unchanged
     ):

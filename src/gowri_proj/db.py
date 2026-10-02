@@ -575,9 +575,11 @@ def find_newer_overlapping_source(
 
 
 def list_watched_files_problems(conn: sqlite3.Connection, limit: int = 20) -> pd.DataFrame:
-    """Files from the last scan(s) that were rejected rather than imported."""
+    """Files from the last scan(s) that were rejected rather than imported.
+    The item list (status "item_list", see sync.py) isn't a rejection."""
     return pd.read_sql(
-        "SELECT * FROM watched_files WHERE status != 'imported' ORDER BY checked_at DESC LIMIT ?",
+        "SELECT * FROM watched_files WHERE status NOT IN ('imported', 'item_list') "
+        "ORDER BY checked_at DESC LIMIT ?",
         conn,
         params=(limit,),
     )

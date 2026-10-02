@@ -21,7 +21,7 @@ from datetime import date
 from pathlib import Path
 
 from . import db
-from .parser import parse_stock_statement
+from .parser import is_item_list, parse_stock_statement
 
 SUPPORTED_SUFFIXES = {".xls", ".xlsx"}
 DEFAULT_UPLOADS_DIR = "uploads"
@@ -64,7 +64,24 @@ class SyncResult:
     superseded: list[tuple[str, str, str]] = field(
         default_factory=list
     )  # rel_path, its own period, newer file that covers it
+    item_lists: list[str] = field(default_factory=list)  # rel_path of item list files seen
     errors: list[tuple[str, str]] = field(default_factory=list)  # rel_path, error message
+
+
+ITEM_LIST_STATUS = "item_list"
+
+
+def _record_item_list(conn, result: SyncResult, rel_name: str, filesize: int, mtime: int) -> None:
+    result.item_lists.append(rel_name)
+    db.upsert_watched_file(
+        conn,
+        rel_name,
+        filesize,
+        mtime,
+        None,
+        ITEM_LIST_STATUS,
+        "The POS item list, not a stock statement — update it under Item code list on the Reports page.",
+    )
 
 
 def sync_folder(conn: sqlite3.Connection, folder: str) -> SyncResult:
@@ -95,7 +112,21 @@ def sync_folder(conn: sqlite3.Connection, folder: str) -> SyncResult:
         filesize, mtime = stat.st_size, int(stat.st_mtime)
         known = db.get_watched_file(conn, rel_name)
         if known is not None and known["filesize"] == filesize and known["mtime"] == mtime:
-            result.unchanged.append(rel_name)
+            # An unchanged file previously rejected as a broken stock
+            # statement may really be the item list (uploads/item_catalog.xlsx
+            # was, on every rescan) — re-check just those, so the false
+            # "rejected file" clears itself instead of lingering forever.
+            if known["status"] == "error" and is_item_list(str(path)):
+                _record_item_list(conn, result, rel_name, filesize, mtime)
+            else:
+                result.unchanged.append(rel_name)
+            continue
+
+        # The POS item list lives in uploads/ too (the Reports page saves it
+        # there). It's not a stock statement, so don't report it as a broken
+        # one.
+        if is_item_list(str(path)):
+            _record_item_list(conn, result, rel_name, filesize, mtime)
             continue
 
         try:
