@@ -41,7 +41,13 @@ from src.gowri_proj.sync import DEFAULT_UPLOADS_DIR, SyncResult, sync_folder
 
 def cmd_import(args: argparse.Namespace) -> None:
     print(f"Reading {args.xls_path} ...")
-    df, meta = parse_stock_statement(args.xls_path)
+    try:
+        df, meta = parse_stock_statement(args.xls_path)
+    except ValueError as e:
+        # The parser's errors are already plain-English ("couldn't open this
+        # file", "only has 9 columns", ...) — print that, not a traceback.
+        print(f"Not imported: {e}")
+        return
     with db.connect(args.db) as conn:
         try:
             result = db.import_report(
