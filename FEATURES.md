@@ -68,6 +68,60 @@ Rules that keep this safe:
 | Reminder to upload a fresh item list when older than the latest report | 2026-10-01 | `a857b79` | `merged/item-list-reminder` | New table (see below) |
 | Rescan recognises the item list instead of rejecting it | 2026-10-01 | `3d24439` | `merged/rescan-item-list` | No |
 | Dated item list copies (last 6 months); rescan imports a newer list (depends on rescan fix) | 2026-10-01 | `f4a731d` | `merged/item-list-archive` | No |
+| Split webapp.py into focused modules (no behaviour change; everything below builds on it) | 2026-10-01 | `6d2efe6` | `merged/split-webapp` | No |
+| Fix: a bad or locked item list no longer aborts a rescan | 2026-10-01 | `4759ead` | `merged/rescan-item-list-robust` | No |
+| Fix: "not in your item list" allows for the 25-character cut-off (721 → 82) | 2026-10-01 | `215e9f1` | `merged/unmatched-truncated-names` | No |
+| Fix: CLI import reports bad files in plain English | 2026-10-01 | `b34a85d` | `merged/cli-import-errors` | No |
+| Fix: low stock must be fewer days than overstock | 2026-10-01 | `6f3c756` | `merged/settings-threshold-order` | No |
+| Fix: data quality shows the source file's name | 2026-10-01 | `9698746` | `merged/quality-issue-source-names` | No |
+| Fix: non-Latin filenames; wrong-upload-box message | 2026-10-01 | `839c239` | `merged/upload-names-and-wrong-box` | No |
+| Fix: stable order for equal values (no reshuffle between runs) | 2026-10-01 | `1817cf3` | `merged/stable-tie-order` | No |
+| Fix: calendar dates shown from their text (no day-early dates) | 2026-10-01 | `23fbfe9` | `merged/date-display` | No |
+| Faster imports: parsers work on whole columns (~5x faster rescans) | 2026-10-01 | `1f225a1` | `merged/fast-parsers` | No |
+
+### Code audit, 2026-10-01 — restructure, 8 fixes, faster imports
+
+Found by reading every module, hitting every page/endpoint in three
+database states (empty, one report, real data) with good and bad input,
+profiling, and checking statuses/segments SKU by SKU against an independent
+reference implementation. Each fix has a regression test that fails on the
+old code.
+
+**Revert order.** Everything below builds on the restructure, so it can only
+be reverted after all of them. Two pairs must also be reverted in order:
+`1817cf3` (stable order) before `215e9f1` (item-list check — they share a
+test file), and `1f225a1` (fast parsers) before `839c239` (upload fixes —
+neighbouring code in parser.py). All others revert on their own.
+
+- **Restructure** `6d2efe6` — `git revert -m 1 6d2efe6` (last). `webapp.py`
+  (~1,400 lines, every route nested in `create_app`) split into
+  `datacache.py`, `web_helpers.py` and `routes/` (pages, settings,
+  inventory, review, imports, exports). Route bodies moved verbatim, endpoint
+  names unchanged; every page/endpoint's output on real data byte-identical.
+- **Rescan robustness** `4759ead` — an item list that failed to import
+  (e.g. duplicate code) or whose copy hit a file lock aborted the whole
+  rescan; now that file is reported and the rest import.
+- **Item-list check** `215e9f1` — "SKUs not in your item list" compared
+  whole names, but the item list cuts names to 25 characters: 721 reported,
+  82 real. Rule shared with rename detection (`identity.catalog_name_keys`).
+- **CLI import** `b34a85d` — a bad file printed a traceback; now the plain
+  message.
+- **Settings order** `6f3c756` — low stock ≥ overstock was accepted (nothing
+  could be healthy); now refused, in Settings and the CLI.
+- **Data-quality names** `9698746` — issues showed an item's merged (newer)
+  name, not the name in the file. Latent on current data.
+- **Uploads** `839c239` — a non-Latin filename was rejected as "not
+  .xls/.xlsx"; a file in the wrong upload box gave a cryptic error.
+- **Stable order** `1817cf3` — equal values reordered between app starts
+  (set order), changing which items made capped lists.
+- **Dates** `23fbfe9` — report periods showed a day early on computers
+  behind UTC ("31 Mar" for "1 Apr"); calendar dates now formatted from their
+  text by one shared `fmtIsoDate()` (replacing four copies). India-time
+  output unchanged.
+- **Fast parsers** `1f225a1` — row-by-row parsing was ~1.8s per statement;
+  column operations are ~11x faster with identical output on all 17 real
+  files. Rescan reads each file once. Fresh 17-file rescan 35.4s → 6.5s.
+  An item-list row without a code is now skipped instead of keyed "nan".
 
 ### Rescan recognises the item list — `fix/rescan-item-list`
 
