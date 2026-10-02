@@ -1294,7 +1294,12 @@ def find_data_quality_issues(all_entries: pd.DataFrame) -> list[dict]:
             out.append(
                 {
                     "brand": r["brand"],
-                    "sku": r["sku"],
+                    # The name as it is in the source file — after renamed
+                    # items are joined up (identity.apply), "sku" may be the
+                    # item's newer name, which isn't what the file says.
+                    "sku": r["source_sku"]
+                    if "source_sku" in r and pd.notna(r["source_sku"])
+                    else r["sku"],
                     "period_label": _period_label(r["period_start"].date(), r["period_end"].date()),
                     "period_end": r["period_end"].date().isoformat(),
                     "issue": issue,
