@@ -132,6 +132,8 @@
     <a class="btn" href="{{ url_for('reports') }}">Manage reports →</a>
   </div>
 
+  <div class="move-strip" id="stale-strip" style="display:none"></div>
+
   <div class="move-strip" id="gap-strip" style="display:none"></div>
 
   <div class="move-strip" id="move-strip"></div>
@@ -175,6 +177,24 @@ document.getElementById('hdr-sub').textContent =
   `sales pace based on the trailing ${DATA.meta.trailing_days} days`;
 document.getElementById('footer-note').textContent =
   `${DATA.kpis.total_skus.toLocaleString('en-IN')} SKUs across ${DATA.kpis.total_brands.toLocaleString('en-IN')} brands`;
+
+// ---------- stale data ----------
+// Everything below is "as of" the latest import; if that's a month or more
+// ago, say so up top, or an out-of-date dashboard reads as current.
+(function () {
+  const days = DATA.meta.days_since_latest;
+  if (days === undefined || days <= DATA.meta.stale_after_days) return;
+  // "2026-08-17" -> "17 Aug 2026", read off the text (no new Date(), which
+  // can shift a day in a timezone behind UTC).
+  const [y, m, d] = DATA.meta.latest_period_end.split('-');
+  const month = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(m) - 1];
+  const el = document.getElementById('stale-strip');
+  el.style.display = '';
+  el.classList.add('move-strip-notice');
+  el.innerHTML = `<span class="status-swatch" style="background:${css.getPropertyValue('--status-warning').trim()}"></span>` +
+    `Your latest import covers up to ${Number(d)} ${month} ${y} — ${fmtNum(days)} days ago, so these figures may be out of date. ` +
+    `<a href="{{ url_for('reports') }}">Upload the next stock statement →</a>`;
+})();
 
 // ---------- incomplete trailing-window warning ----------
 // Distinct from Reports/Import health's full-history gap check — this is
