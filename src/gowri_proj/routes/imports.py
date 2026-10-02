@@ -15,7 +15,7 @@ from ..analysis import (
     find_unmatched_skus,
 )
 from ..datacache import DataCache
-from ..parser import parse_item_list, parse_stock_statement
+from ..parser import is_item_list, is_stock_statement, parse_item_list, parse_stock_statement
 from ..sync import (
     ITEM_CATALOG_FILENAME,
     ITEM_LIST_STATUS,
@@ -184,6 +184,11 @@ def register(app: Flask, data: DataCache) -> None:
             try:
                 df, meta = parse_stock_statement(str(tmp_path))
             except Exception as e:  # noqa: BLE001 — surfaced to the user, not a server error
+                if is_item_list(str(tmp_path)):
+                    return jsonify(
+                        error="This is the item list, not a stock statement — upload it under "
+                        "Item code list, below."
+                    ), 422
                 return jsonify(error=str(e)), 422
             if not meta.period_start or not meta.period_end:
                 return jsonify(error="No reporting period found in the file banner."), 422
@@ -292,6 +297,11 @@ def register(app: Flask, data: DataCache) -> None:
             try:
                 df, meta = parse_item_list(str(tmp_path))
             except Exception as e:  # noqa: BLE001 — surfaced to the user, not a server error
+                if is_stock_statement(str(tmp_path)):
+                    return jsonify(
+                        error="This is a stock statement, not the item list — upload it under "
+                        "Upload a new month, above."
+                    ), 422
                 return jsonify(error=str(e)), 422
             if df.empty:
                 return jsonify(

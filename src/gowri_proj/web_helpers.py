@@ -89,9 +89,19 @@ def _validate_upload(file: FileStorage | None) -> tuple[str | None, tuple | None
     """
     if not file or not file.filename:
         return None, (jsonify(error="No file received."), 400)
-    filename = secure_filename(file.filename)
-    if not filename.lower().endswith((".xls", ".xlsx")):
+    # Judge the type by the name as given — secure_filename() drops every
+    # non-ASCII character, so for "स्टॉक.xls" it returns just "xls", which
+    # lost the dot and used to be rejected as "not .xls/.xlsx".
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in (".xls", ".xlsx"):
         return None, (jsonify(error="Only .xls or .xlsx files are supported."), 400)
+    filename = secure_filename(file.filename)
+    if Path(filename).suffix.lower() != suffix or not Path(filename).stem:
+        # Nothing usable left of the name: derive a stable one from it, so
+        # re-uploading the same file reuses the same name (and its tracking)
+        # while different files don't collide.
+        digest = hashlib.sha256(file.filename.encode("utf-8")).hexdigest()[:8]
+        filename = f"upload_{digest}{suffix}"
     return filename, None
 
 
