@@ -83,6 +83,7 @@
   .history-btn:hover { background: var(--surface-2); color: var(--text-primary); }
   .history-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
   .kpi-history-hint { font-size: var(--text-xs); color: var(--text-muted); margin-top: 4px; }
+  .kpi-delta { font-size: var(--text-sm); color: var(--text-secondary); margin-top: 4px; font-variant-numeric: tabular-nums; }
   .history-note { font-size: var(--text-sm); color: var(--text-muted); margin: 10px 0 0; }
   .history-table td.history-delta { color: var(--text-muted); }
 
@@ -218,17 +219,31 @@ document.getElementById('footer-note').textContent =
 // ---------- KPI tiles ----------
 // `history` names the status-history field a tile's popup charts (see
 // openKpiHistory below); Brands stocked has none — not tracked per month.
+// "▲ ₹2.6 L vs Jul 2026" under each figure — the first thing anyone asks
+// on opening the dashboard. Neutral colour on purpose: more stock value or
+// more SKUs isn't good or bad by itself.
+const PREV = DATA.kpis_previous;
+function kpiDelta(field, fmt) {
+  if (!PREV) return '';
+  const d = DATA.kpis[field] - PREV[field];
+  const vs = `vs ${escapeHtml(PREV.label)}`;
+  if (Math.round(d) === 0) return `<div class="kpi-delta">No change ${vs}</div>`;
+  return `<div class="kpi-delta">${d > 0 ? '▲' : '▼'} ${fmt(Math.abs(d))} ${vs}</div>`;
+}
 const kpis = [
-  { label: 'Total SKUs', value: fmtNum(DATA.kpis.total_skus), history: 'total_skus' },
-  { label: 'Brands stocked', value: fmtNum(DATA.kpis.total_brands) },
-  { label: 'Inventory value on hand', value: fmtINR(DATA.kpis.total_value), history: 'total_value' },
-  { label: 'Units on hand', value: fmtNum(DATA.kpis.total_units), history: 'total_units' },
+  { label: 'Total SKUs', value: fmtNum(DATA.kpis.total_skus), field: 'total_skus', fmt: fmtNum, history: 'total_skus' },
+  { label: 'Brands stocked', value: fmtNum(DATA.kpis.total_brands), field: 'total_brands', fmt: fmtNum },
+  { label: 'Inventory value on hand', value: fmtINRShort(DATA.kpis.total_value), exact: fmtINR(DATA.kpis.total_value), field: 'total_value', fmt: fmtINRShort, history: 'total_value' },
+  { label: 'Units on hand', value: fmtNum(DATA.kpis.total_units), field: 'total_units', fmt: fmtNum, history: 'total_units' },
 ];
-document.getElementById('kpi-row').innerHTML = kpis.map(k => k.history
-  ? `<div class="stat-tile stat-tile-lg stat-tile-clickable" data-history="${k.history}" tabindex="0" role="button" aria-label="${k.label} — see history">` +
-    `<div class="label">${k.label}</div><div class="value">${k.value}</div><div class="kpi-history-hint">See history ›</div></div>`
-  : `<div class="stat-tile stat-tile-lg"><div class="label">${k.label}</div><div class="value">${k.value}</div></div>`
-).join('');
+document.getElementById('kpi-row').innerHTML = kpis.map(k => {
+  const value = `<div class="value"${k.exact ? ` title="${k.exact}"` : ''}>${k.value}</div>`;
+  const delta = kpiDelta(k.field, k.fmt);
+  return k.history
+    ? `<div class="stat-tile stat-tile-lg stat-tile-clickable" data-history="${k.history}" tabindex="0" role="button" aria-label="${k.label} — see history">` +
+      `<div class="label">${k.label}</div>${value}${delta}<div class="kpi-history-hint">See history ›</div></div>`
+    : `<div class="stat-tile stat-tile-lg"><div class="label">${k.label}</div>${value}${delta}</div>`;
+}).join('');
 
 // ---------- merged status + action tabs ----------
 // The status row IS the tab switcher — one control instead of the old
