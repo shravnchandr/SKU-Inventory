@@ -16,7 +16,7 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -140,6 +140,41 @@ def _update_banner_message(status: UpdateStatus) -> str:
         message += f' — latest: "{status.latest_summary}"'
     message += ". Double-click update.bat (or update.command on Mac), then restart the app."
     return message
+
+
+def _short_date(d: date, other: date) -> str:
+    """'9 Aug', with the year only when the two dates being compared differ in it."""
+    s = f"{d.day} {d.strftime('%b')}"
+    return s if d.year == other.year else f"{s} {d.year}"
+
+
+def item_list_reminder(catalog_meta: dict | None, latest_report_end: date | None) -> dict | None:
+    """A nudge to upload a fresh item list, or None if it's up to date.
+
+    Rename detection leans on the item list's codes, and it only sees a
+    rename once an item list from *after* that rename has been uploaded —
+    so the list is meant to be uploaded every month, alongside the stock
+    statement. "Older than the latest report" is the signal it's been missed.
+    """
+    if latest_report_end is None:
+        return None
+    if catalog_meta is None:
+        return {
+            "kind": "missing",
+            "message": "No item list uploaded yet. Upload one so renamed items are recognised automatically.",
+        }
+    as_of = date.fromisoformat(catalog_meta["as_of"])
+    if as_of >= latest_report_end:
+        return None
+    return {
+        "kind": "stale",
+        "item_list_as_of": as_of.isoformat(),
+        "latest_report_end": latest_report_end.isoformat(),
+        "message": (
+            f"Your item list is from {_short_date(as_of, latest_report_end)} and the latest report is "
+            f"{_short_date(latest_report_end, as_of)}. Upload a fresh one so renames are recognised automatically."
+        ),
+    }
 
 
 def _value_segment_for(summary: InventorySummary, sku: str) -> dict | None:
@@ -945,6 +980,10 @@ def create_app(
             coverage_gaps=gaps["coverage_gaps"],
             problem_files=problem_files,
             item_catalog=catalog_meta,
+            item_list_reminder=item_list_reminder(
+                catalog_meta,
+                reports_df["period_end"].max().date() if not reports_df.empty else None,
+            ),
             unmatched_skus=unmatched_skus,
             sku_churn=sku_churn,
             # Impossible/inconsistent source rows (see analysis.py's
@@ -1207,12 +1246,21 @@ def create_app(
                     "imported",
                 )
 
+                # Checked now, after the import, against whatever the latest
+                # report is (this one, or a later month already imported).
+                latest_end = conn.execute("SELECT MAX(period_end) FROM reports").fetchone()[0]
+                reminder = item_list_reminder(
+                    db.get_item_catalog_meta(conn),
+                    date.fromisoformat(latest_end) if latest_end else None,
+                )
+
             return jsonify(
                 status="imported",
                 period_start=meta.period_start.isoformat(),
                 period_end=meta.period_end.isoformat(),
                 sku_count=import_result.sku_count,
                 superseded_report_ids=import_result.superseded_report_ids,
+                item_list_reminder=reminder,
             )
 
     @app.post("/api/upload-item-list")
@@ -1264,6 +1312,10 @@ def create_app(
                 return jsonify(
                     error=f"Could not save the uploaded file ({e}). The catalog was not changed."
                 ), 500
+            # Only now, with both the DB import and the file save done — a
+            # rolled-back upload above mustn't leave its date behind.
+            with db.connect(app.config["DB_PATH"]) as conn:
+                db.set_item_catalog_as_of(conn, meta.as_of)
 
             return jsonify(
                 status="imported",
