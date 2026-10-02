@@ -1014,6 +1014,20 @@ def create_app(
             filename,
         )
 
+    @app.get("/review")
+    def review():
+        return render_template("review.html", active_page="review")
+
+    @app.get("/api/review-count")
+    def api_review_count():
+        """How many renamed items are waiting for a decision — for the
+        badge on the top bar's Review tab, on every page."""
+        _, summary, _ = get_current_data()
+        resolution = current_identity()
+        return jsonify(
+            pending=len(resolution.suggestions) if summary is not None and resolution else 0
+        )
+
     @app.get("/settings")
     def settings():
         with db.connect(app.config["DB_PATH"]) as conn:

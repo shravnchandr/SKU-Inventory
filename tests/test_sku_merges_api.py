@@ -155,7 +155,32 @@ def test_export_lists_merges_and_pending(client):
     assert "Waiting for review,DOLO 200MG TAB,DOLO 800MG TAB" in text
 
 
-def test_reports_page_has_the_card(client):
+def test_review_page_has_the_card_and_reports_links_to_it(client):
     c, _ = client
-    html = c.get("/reports").data.decode()
+    html = c.get("/review").data.decode()
     assert 'id="card-renames"' in html and "/api/sku-merges" in html
+    reports = c.get("/reports").data.decode()
+    assert 'id="card-renames"' not in reports  # moved, not duplicated
+
+
+def test_review_count_for_the_nav_badge(client):
+    c, app = client
+    pending = len(c.get("/api/sku-merges").get_json()["pending"])
+    assert pending > 0
+    assert c.get("/api/review-count").get_json() == {"pending": pending}
+    first = c.get("/api/sku-merges").get_json()["pending"][0]
+    _post(c, app, "/api/sku-merges",
+          {"old_name": first["old_name"], "new_name": first["new_name"], "decision": "separate"})  # fmt: skip
+    assert c.get("/api/review-count").get_json() == {"pending": pending - 1}
+
+
+def test_every_page_has_the_review_tab(client):
+    c, _ = client
+    for path in ("/dashboard", "/trends", "/reports", "/settings", "/review"):
+        html = c.get(path).data.decode()
+        assert 'id="nav-review-badge"' in html, path
+
+
+def test_review_count_with_no_data(tmp_path):
+    app = create_app(db_path=str(tmp_path / "empty.db"), uploads_dir=str(tmp_path / "u"))
+    assert app.test_client().get("/api/review-count").get_json() == {"pending": 0}
