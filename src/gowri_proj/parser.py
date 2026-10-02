@@ -228,6 +228,15 @@ def is_item_list(path: str) -> bool:
     )
 
 
+def is_stock_statement(path: str) -> bool:
+    """Whether this file is a stock statement export ("Stock Statement from
+    ... to ..." in its banner). Like is_item_list: reads only the first few
+    rows and never raises — for telling someone they used the wrong upload
+    box, after the expected parse has already failed."""
+    raw = _banner_rows(path, 0)
+    return raw is not None and _scan_banner(raw, _PERIOD_RE)[2] is not None
+
+
 def parse_item_list(path: str, sheet_name: str = "Sheet2") -> tuple[pd.DataFrame, ItemListMeta]:
     """Parse the "item list" POS export into a tidy, one-row-per-code DataFrame.
 
