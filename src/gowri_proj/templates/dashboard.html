@@ -528,6 +528,15 @@ TAB_DEFS.forEach(t => renderTable(t.key));
     `Tier A = the top ${th.value_tier_a_pct}% of value on the shelf, B the next slice up to ${th.value_tier_b_pct}%, ` +
     `C the long tail beyond that — crossed with whether each SKU is actually moving. Click a tile for guidance and its SKU list.`;
 
+  // Each tile's share of the value on the shelf (all 9 tiles together) —
+  // what makes "A · Slow" read as "30% of your stock money is slow".
+  const shelfValue = segments.reduce((sum, s) => sum + s.value, 0);
+  function shareOfValue(v) {
+    if (shelfValue <= 0) return '–';
+    const pct = 100 * v / shelfValue;
+    return `${pct > 0 && pct < 1 ? '<1' : Math.round(pct)}% of stock value`;
+  }
+
   const groupsEl = document.getElementById('value-segment-groups');
   const tiers = ['A', 'B', 'C'];
   groupsEl.innerHTML = tiers.map(tier => {
@@ -535,7 +544,7 @@ TAB_DEFS.forEach(t => renderTable(t.key));
       <div class="stat-tile stat-tile-clickable" data-tier="${s.tier}" data-movement="${s.movement}" tabindex="0" role="button">
         <div class="label">${s.movement_label}</div>
         <div class="value">${fmtNum(s.count)} SKUs</div>
-        <div class="sub">${fmtINR(s.value)}</div>
+        <div class="sub">${fmtINR(s.value)} · ${shareOfValue(s.value)}</div>
       </div>`).join('');
     const tierLabel = segments.find(s => s.tier === tier).tier_label;
     return `<div class="segment-tier-group"><div class="segment-tier-label">${tierLabel}</div><div class="aging-tiles">${tileHtml}</div></div>`;
