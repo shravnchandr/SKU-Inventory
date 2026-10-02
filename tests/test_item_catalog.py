@@ -606,3 +606,17 @@ def test_unmatched_skus_allows_for_the_item_lists_25_character_cut_off():
     result = find_unmatched_skus(enriched, {"SIMILAC PLUS [IQ] NO-1 40", "DOLO 650"})
     assert result["total"] == 1
     assert [i["sku"] for i in result["items"]] == ["NOT IN THE LIST AT ALL TAB"]
+
+
+def test_sku_churn_order_is_stable_for_equal_values():
+    # Equal values used to come out in set order, which changes every time
+    # the app starts; the name now breaks ties.
+    from src.gowri_proj.analysis import find_sku_churn
+
+    def row(rid, end, sku):
+        return {"report_id": rid, "period_start": pd.Timestamp(end) - pd.Timedelta(days=29),
+                "period_end": pd.Timestamp(end), "brand": "B", "sku": sku, "closing_stock": 1.0, "value": 5.0}  # fmt: skip
+
+    names = [f"ITEM {c}" for c in "QWERTYUIOPASDFGH"]
+    e = pd.DataFrame([row(1, "2026-06-30", "OLD")] + [row(2, "2026-07-31", n) for n in names])
+    assert [r["sku"] for r in find_sku_churn(e, {})["new_skus"]] == sorted(names)
