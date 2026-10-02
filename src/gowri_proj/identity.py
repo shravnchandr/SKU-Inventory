@@ -139,6 +139,16 @@ def name_similarity(a: str, b: str) -> float:
     return SequenceMatcher(None, base_name(a), base_name(b)).ratio()
 
 
+def catalog_name_keys(name: str) -> list[str]:
+    """How a stock-statement name can appear in the item list: as itself, or
+    — the item list cuts product names to CATALOG_NAME_MAX characters — as
+    its first 25. Uppercased and stripped, like the item list's names are
+    when indexed. The one place this rule lives (CodeLookup and
+    analysis.find_unmatched_skus both use it)."""
+    key = str(name).strip().upper()
+    return [key, key[:CATALOG_NAME_MAX].rstrip()] if len(key) > CATALOG_NAME_MAX else [key]
+
+
 class CodeLookup:
     """Stock-statement name -> item code, from the item list(s).
 
@@ -172,16 +182,11 @@ class CodeLookup:
     def code_for(self, name: str) -> tuple[str | None, bool]:
         """(code, exact). ``exact`` is False when the code was only found via
         the item list's long name or its 25-character cut-off."""
-        key = str(name).strip().upper()
+        keys = catalog_name_keys(name)
         for codes, exact in (
-            (self._strong.get(key), True),
-            (self._long.get(key), False),
-            (
-                self._strong.get(key[:CATALOG_NAME_MAX].rstrip())
-                if len(key) > CATALOG_NAME_MAX
-                else None,
-                False,
-            ),
+            (self._strong.get(keys[0]), True),
+            (self._long.get(keys[0]), False),
+            (self._strong.get(keys[1]) if len(keys) > 1 else None, False),
         ):
             if codes:
                 return (next(iter(codes)), exact) if len(codes) == 1 else (None, False)

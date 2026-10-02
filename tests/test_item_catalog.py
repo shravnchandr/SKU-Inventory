@@ -510,9 +510,7 @@ def test_import_item_catalog_tolerates_a_blank_long_name(tmp_path):
     # item_name_changes' NOT NULL columns. Re-importing an unchanged catalog
     # (even one with blank long_names) must be a no-op, not a crash.
     with db.connect(str(tmp_path / "test.db")) as conn:
-        db.import_item_catalog(
-            conn, _catalog_df([_catalog_row("C1", "XYZ 10G", float("nan"))])
-        )
+        db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "XYZ 10G", float("nan"))]))
         count = db.import_item_catalog(
             conn, _catalog_df([_catalog_row("C1", "XYZ 10G", float("nan"))])
         )
@@ -525,9 +523,7 @@ def test_import_item_catalog_logs_a_long_name_appearing_where_it_was_blank(tmp_p
     # A code that had no long_name before and now has one isn't a "rename"
     # (there's no old name to pair it against) — nothing should be logged.
     with db.connect(str(tmp_path / "test.db")) as conn:
-        db.import_item_catalog(
-            conn, _catalog_df([_catalog_row("C1", "XYZ 10G", float("nan"))])
-        )
+        db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "XYZ 10G", float("nan"))]))
         db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "XYZ 10G", "XYZ 10G TUBE")]))
         alias_map = db.get_name_change_map(conn)
     assert alias_map == {}
@@ -587,3 +583,26 @@ def test_rollback_item_catalog_undoes_the_catalog_and_only_the_new_renames(tmp_p
 
     assert alias_map == {"OLD NAME 1": "NEW NAME 1", "OLD NAME 1 LONG": "NEW NAME 1 LONG"}
     assert meta["item_count"] == 2
+
+
+def test_unmatched_skus_allows_for_the_item_lists_25_character_cut_off():
+    # The item list stores "SIMILAC PLUS [IQ] NO-1 40" for the stock
+    # statement's "SIMILAC PLUS [IQ] NO-1 400GM". That's a match, not an
+    # unmatched SKU — real data had 639 such false "unmatched" items.
+    from src.gowri_proj.analysis import find_unmatched_skus
+
+    enriched = pd.DataFrame(
+        [
+            {
+                "brand": "B",
+                "sku": "SIMILAC PLUS [IQ] NO-1 400GM",
+                "closing_stock": 1.0,
+                "value": 10.0,
+            },
+            {"brand": "B", "sku": "dolo 650", "closing_stock": 1.0, "value": 5.0},  # case differs
+            {"brand": "B", "sku": "NOT IN THE LIST AT ALL TAB", "closing_stock": 1.0, "value": 3.0},
+        ]
+    )
+    result = find_unmatched_skus(enriched, {"SIMILAC PLUS [IQ] NO-1 40", "DOLO 650"})
+    assert result["total"] == 1
+    assert [i["sku"] for i in result["items"]] == ["NOT IN THE LIST AT ALL TAB"]
