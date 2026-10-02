@@ -93,3 +93,22 @@ def test_stock_statement_from_a_truncated_file_gets_a_clear_error(tmp_path):
 
     with pytest.raises(ValueError, match="Couldn't open this file as an Excel spreadsheet"):
         parse_stock_statement(str(truncated_path))
+
+
+def test_item_list_row_without_a_code_is_skipped_not_keyed_as_nan(tmp_path):
+    # An item can only be matched by its code. A row with a name but no code
+    # used to get the code "nan" — two of them collided on the primary key
+    # and blocked the whole item-list upload.
+    from src.gowri_proj.parser import parse_item_list
+    from tests.test_webapp_catalog_upload import _write_item_list
+
+    path = tmp_path / "il.xlsx"
+    _write_item_list(path, [
+        ("brand", "BRAND A"),
+        ("item", "X1", "X TAB", "10", 1.0, 1.0, 12.0, "3004", None),
+        ("item", None, "NO CODE ONE", "10", 1.0, 1.0, 12.0, "3004", None),
+        ("item", None, "NO CODE TWO", "10", 1.0, 1.0, 12.0, "3004", None),
+    ])  # fmt: skip
+    df, _ = parse_item_list(str(path))
+    assert list(df["code"]) == ["X1"]
+    assert list(df["brand"]) == ["BRAND A"]
