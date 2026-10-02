@@ -1006,7 +1006,10 @@ def _pair_renames_via_catalog(
                 "value": new_rows[n_name]["value"],
             }
         )
-    pairs.sort(key=lambda p: -p["value"])
+    # Name as the tie-breaker: these come out of sets, whose order changes
+    # every time the app starts — equal values would otherwise reorder (and
+    # swap which ones make a capped list) from one run to the next.
+    pairs.sort(key=lambda p: (-p["value"], p["old_name"]))
     return pairs, paired_vanished, paired_new
 
 
@@ -1078,7 +1081,9 @@ def find_sku_churn(
     )
 
     def _rows(rows: dict[str, dict], names: set[str]) -> list[dict]:
-        items = sorted(({"sku": name, **rows[name]} for name in names), key=lambda r: -r["value"])
+        items = sorted(
+            ({"sku": name, **rows[name]} for name in names), key=lambda r: (-r["value"], r["sku"])
+        )  # name breaks ties — see _pair_renames_via_catalog
         return items[:limit]
 
     true_new = new_names - paired_new

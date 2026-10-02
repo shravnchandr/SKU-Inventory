@@ -510,9 +510,7 @@ def test_import_item_catalog_tolerates_a_blank_long_name(tmp_path):
     # item_name_changes' NOT NULL columns. Re-importing an unchanged catalog
     # (even one with blank long_names) must be a no-op, not a crash.
     with db.connect(str(tmp_path / "test.db")) as conn:
-        db.import_item_catalog(
-            conn, _catalog_df([_catalog_row("C1", "XYZ 10G", float("nan"))])
-        )
+        db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "XYZ 10G", float("nan"))]))
         count = db.import_item_catalog(
             conn, _catalog_df([_catalog_row("C1", "XYZ 10G", float("nan"))])
         )
@@ -525,9 +523,7 @@ def test_import_item_catalog_logs_a_long_name_appearing_where_it_was_blank(tmp_p
     # A code that had no long_name before and now has one isn't a "rename"
     # (there's no old name to pair it against) — nothing should be logged.
     with db.connect(str(tmp_path / "test.db")) as conn:
-        db.import_item_catalog(
-            conn, _catalog_df([_catalog_row("C1", "XYZ 10G", float("nan"))])
-        )
+        db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "XYZ 10G", float("nan"))]))
         db.import_item_catalog(conn, _catalog_df([_catalog_row("C1", "XYZ 10G", "XYZ 10G TUBE")]))
         alias_map = db.get_name_change_map(conn)
     assert alias_map == {}
@@ -587,3 +583,17 @@ def test_rollback_item_catalog_undoes_the_catalog_and_only_the_new_renames(tmp_p
 
     assert alias_map == {"OLD NAME 1": "NEW NAME 1", "OLD NAME 1 LONG": "NEW NAME 1 LONG"}
     assert meta["item_count"] == 2
+
+
+def test_sku_churn_order_is_stable_for_equal_values():
+    # Equal values used to come out in set order, which changes every time
+    # the app starts; the name now breaks ties.
+    from src.gowri_proj.analysis import find_sku_churn
+
+    def row(rid, end, sku):
+        return {"report_id": rid, "period_start": pd.Timestamp(end) - pd.Timedelta(days=29),
+                "period_end": pd.Timestamp(end), "brand": "B", "sku": sku, "closing_stock": 1.0, "value": 5.0}  # fmt: skip
+
+    names = [f"ITEM {c}" for c in "QWERTYUIOPASDFGH"]
+    e = pd.DataFrame([row(1, "2026-06-30", "OLD")] + [row(2, "2026-07-31", n) for n in names])
+    assert [r["sku"] for r in find_sku_churn(e, {})["new_skus"]] == sorted(names)
