@@ -19,16 +19,26 @@ from src.gowri_proj.webapp import create_app
 
 def _meta(start, end):
     return ReportMeta(
-        company="TEST PHARMACY", location="TEST CITY",
-        period_start=date.fromisoformat(start), period_end=date.fromisoformat(end),
+        company="TEST PHARMACY",
+        location="TEST CITY",
+        period_start=date.fromisoformat(start),
+        period_end=date.fromisoformat(end),
     )
 
 
 def _row(sku, closing, value, sales, brand="BRAND"):
     return {
-        "brand": brand, "sku": sku, "opening_stock": closing + sales, "purchase": 0.0,
-        "purchase_free": 0.0, "other_receipt": 0.0, "sales": sales, "sales_free": 0.0,
-        "other_issue": 0.0, "closing_stock": closing, "value": value,
+        "brand": brand,
+        "sku": sku,
+        "opening_stock": closing + sales,
+        "purchase": 0.0,
+        "purchase_free": 0.0,
+        "other_receipt": 0.0,
+        "sales": sales,
+        "sales_free": 0.0,
+        "other_issue": 0.0,
+        "closing_stock": closing,
+        "value": value,
     }
 
 
@@ -52,7 +62,9 @@ def _seed(app):
     ]
     with db.connect(app.config["DB_PATH"]) as conn:
         db.import_report(
-            conn, pd.DataFrame(rows, columns=TIDY_COLUMNS), _meta("2026-06-01", "2026-06-30"),
+            conn,
+            pd.DataFrame(rows, columns=TIDY_COLUMNS),
+            _meta("2026-06-01", "2026-06-30"),
             "jun.xls",
         )
 
@@ -79,7 +91,7 @@ def test_xlsx_summary_counts_match_segment_sheets(client):
     header_idx = next(i for i, r in enumerate(summary) if r and r[0] == "Tier")
     header = summary[header_idx]
     total = 0
-    for r in summary[header_idx + 1:]:
+    for r in summary[header_idx + 1 :]:
         rec = dict(zip(header, r))
         sheet_rows = list(wb[rec["Sheet"]].iter_rows(values_only=True))[1:]
         assert len(sheet_rows) == rec["SKUs"]
@@ -112,7 +124,8 @@ def test_csv_returns_one_segments_rows(client):
     wb = load_workbook(io.BytesIO(c.get("/api/value-segments/export.xlsx").data))
     # Find which tier SLOW landed in, then ask for exactly that tile.
     tier = next(
-        n.split(" - ")[0] for n in wb.sheetnames[1:]
+        n.split(" - ")[0]
+        for n in wb.sheetnames[1:]
         if any(r[1] == "SLOW" for r in wb[n].iter_rows(min_row=2, values_only=True))
     )
     resp = c.get(f"/api/value-segments/export.csv?tier={tier}&movement=slow")
@@ -144,3 +157,10 @@ def test_dashboard_page_links_to_the_downloads(client):
     html = c.get("/dashboard").data.decode()
     assert "/api/value-segments/export.xlsx" in html
     assert "/api/value-segments/export.csv" in html
+
+
+def test_segment_tiles_show_share_of_stock_value(client):
+    c, app = client
+    _seed(app)
+    html = c.get("/dashboard").data.decode()
+    assert "% of stock value" in html and "shelfValue" in html
