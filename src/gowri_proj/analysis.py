@@ -44,6 +44,8 @@ from typing import TypedDict
 import numpy as np
 import pandas as pd
 
+from .identity import catalog_name_keys
+
 
 class ThresholdValues(TypedDict):
     """The six user-configurable status thresholds, with no persistence
@@ -1106,11 +1108,16 @@ def find_unmatched_skus(enriched: pd.DataFrame, catalog_names: set[str], limit: 
     Returns ``{"total": N, "items": [...]}`` — ``total`` is the *true* count
     (so the UI can say "632 SKUs don't match" even when only the top `limit`,
     by value, are actually listed) and ``items`` is that display-capped list.
+
+    Matched the way the item list actually stores names (catalog_name_keys):
+    it cuts product names to 25 characters, so a longer stock-statement name
+    is found by its first 25. Comparing whole names exactly reported 721
+    "unmatched" SKUs on real data where only 82 really were.
     """
     if not catalog_names or enriched.empty:
         return {"total": 0, "items": []}
-    current_names = enriched["sku"].str.strip()
-    mask = ~current_names.isin(catalog_names)
+    known = {str(n).strip().upper() for n in catalog_names}
+    mask = ~enriched["sku"].map(lambda s: any(k in known for k in catalog_name_keys(s)))
     unmatched = enriched[mask].sort_values("value", ascending=False)
     items = [
         {
