@@ -59,10 +59,16 @@ from .excel_export import (
     value_segments_workbook,
 )
 from .parser import parse_item_list, parse_stock_statement
-from .sync import DEFAULT_UPLOADS_DIR, fy_folder, sync_folder
+from .sync import (
+    DEFAULT_UPLOADS_DIR,
+    ITEM_CATALOG_FILENAME,
+    ITEM_LIST_STATUS,
+    archive_item_list,
+    fy_folder,
+    prune_item_list_archive,
+    sync_folder,
+)
 from .update_check import UpdateStatus, check_for_update
-
-ITEM_CATALOG_FILENAME = "item_catalog.xlsx"
 
 DEFAULT_DB_PATH = db.DEFAULT_DB_PATH
 DEFAULT_LOG_DIR = "logs"
@@ -1316,6 +1322,23 @@ def create_app(
             # rolled-back upload above mustn't leave its date behind.
             with db.connect(app.config["DB_PATH"]) as conn:
                 db.set_item_catalog_as_of(conn, meta.as_of)
+                # Known to a rescan as the item list it already has, so it
+                # isn't re-imported or flagged.
+                st = dest.stat()
+                db.upsert_watched_file(
+                    conn, ITEM_CATALOG_FILENAME, st.st_size, int(st.st_mtime), None, ITEM_LIST_STATUS,
+                    "The current item list.",
+                )  # fmt: skip
+                # A dated copy for the record (last 6 months kept). Not
+                # worth failing an otherwise-complete upload over.
+                try:
+                    archive_item_list(
+                        conn, uploads_dir, dest,
+                        meta.as_of or datetime.now(UTC).astimezone().date(), Path(filename).suffix,
+                    )  # fmt: skip
+                    prune_item_list_archive(conn, uploads_dir)
+                except OSError:
+                    app.logger.exception("Couldn't keep a dated copy of the uploaded item list")
 
             return jsonify(
                 status="imported",
@@ -1334,6 +1357,7 @@ def create_app(
             filename_reused=result.filename_reused,
             superseded=result.superseded,
             item_lists=result.item_lists,
+            item_lists_imported=result.item_lists_imported,
             errors=result.errors,
         )
 

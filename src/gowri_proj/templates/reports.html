@@ -614,6 +614,9 @@ document.getElementById('refresh-btn')?.addEventListener('click', async (ev) => 
     const n = data.imported.length;
     // Not an error: an older file overlapping a newer one is skipped by
     // design (see sync.py) — but say so, or it looks like nothing happened.
+    // A newer item list dropped straight into uploads/ is imported by a
+    // rescan too — say which.
+    (data.item_lists_imported || []).forEach(([, asOf]) => toast(`Imported the item list dated ${asOf} from the uploads folder.`, 'success'));
     const sup = (data.superseded || []).length;
     if (sup > 0) {
       toast(`${sup} older file${sup === 1 ? '' : 's'} skipped — overlapped by a more recently saved file. See Import health below.`);

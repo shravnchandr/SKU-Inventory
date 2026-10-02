@@ -129,8 +129,14 @@ def _report_sync(result: SyncResult) -> None:
             f"  ~ skipped {filename} ({period}): overlaps {newer}, a more recently saved file, "
             f"which is used instead"
         )
+    imported_lists = {f for f, _ in result.item_lists_imported}
+    for filename, as_of in result.item_lists_imported:
+        print(f"  + imported {filename} as the current item list (dated {as_of})")
     for filename in result.item_lists:
-        print(f"  · {filename}: the POS item list, not a stock statement (left as is)")
+        if filename not in imported_lists:
+            print(
+                f"  · {filename}: an item list, not a stock statement (not newer than the current one)"
+            )
     for filename, error in result.errors:
         print(f"  ✗ skipped {filename}: {error}")
     if result.unchanged:

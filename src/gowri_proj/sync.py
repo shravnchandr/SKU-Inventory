@@ -15,13 +15,15 @@ recorded as superseded and left alone on later scans.
 
 from __future__ import annotations
 
+import re
+import shutil
 import sqlite3
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from . import db
-from .parser import is_item_list, parse_stock_statement
+from .parser import is_item_list, parse_item_list, parse_stock_statement
 
 SUPPORTED_SUFFIXES = {".xls", ".xlsx"}
 DEFAULT_UPLOADS_DIR = "uploads"
@@ -65,23 +67,126 @@ class SyncResult:
         default_factory=list
     )  # rel_path, its own period, newer file that covers it
     item_lists: list[str] = field(default_factory=list)  # rel_path of item list files seen
+    item_lists_imported: list[tuple[str, str]] = field(
+        default_factory=list
+    )  # rel_path, list date — a newer item list found in the folder and imported
     errors: list[tuple[str, str]] = field(default_factory=list)  # rel_path, error message
 
 
 ITEM_LIST_STATUS = "item_list"
 
+# The current item list, always at this path in uploads/ (the Reports page
+# saves it here; a rescan that imports a newer one copies it here too).
+ITEM_CATALOG_FILENAME = "item_catalog.xlsx"
 
-def _record_item_list(conn, result: SyncResult, rel_name: str, filesize: int, mtime: int) -> None:
-    result.item_lists.append(rel_name)
+# Every item list imported is also kept, dated, under
+# uploads/item_lists/<FY>/item_list_<date>.<ext> — but only the last six
+# months of them: the rename log in the database already remembers every
+# rename an item list revealed, so older files have no further use.
+ITEM_LISTS_DIR = "item_lists"
+ITEM_LIST_KEEP_DAYS = 183
+_ARCHIVED_ITEM_LIST = re.compile(r"^item_list_(\d{4}-\d{2}-\d{2})\.(?:xls|xlsx)$", re.IGNORECASE)
+
+
+def archive_item_list(
+    conn: sqlite3.Connection, folder: Path, src: Path, as_of: date, suffix: str
+) -> str:
+    """Keep a dated copy of an item list that just became the current one."""
+    rel = f"{ITEM_LISTS_DIR}/{fy_folder(as_of)}/item_list_{as_of.isoformat()}{suffix.lower() or '.xlsx'}"
+    dest = folder / rel
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    if src.resolve() != dest.resolve():
+        shutil.copyfile(src, dest)
+    st = dest.stat()
     db.upsert_watched_file(
-        conn,
-        rel_name,
-        filesize,
-        mtime,
-        None,
-        ITEM_LIST_STATUS,
-        "The POS item list, not a stock statement — update it under Item code list on the Reports page.",
-    )
+        conn, rel, st.st_size, int(st.st_mtime), None, ITEM_LIST_STATUS,
+        f"Item list dated {as_of.isoformat()}, kept for the record (the last 6 months are kept).",
+    )  # fmt: skip
+    return rel
+
+
+def prune_item_list_archive(conn: sqlite3.Connection, folder: Path) -> list[str]:
+    """Delete archived item lists more than ITEM_LIST_KEEP_DAYS older than
+    the newest one. Measured from the newest list's date, not today, so a
+    few months without uploads doesn't empty the archive. Only ever touches
+    files this app wrote — item_lists/**/item_list_YYYY-MM-DD.xls(x) — never
+    anything else someone put in uploads/. A file that can't be deleted
+    (locked) is left for next time."""
+    root = folder / ITEM_LISTS_DIR
+    if not root.is_dir():
+        return []
+    dated = []
+    for p in root.rglob("*"):
+        m = _ARCHIVED_ITEM_LIST.match(p.name)
+        if not (m and p.is_file()):
+            continue
+        try:
+            dated.append((date.fromisoformat(m.group(1)), p))
+        except ValueError:  # e.g. item_list_2026-13-01.xlsx — not one of ours
+            pass
+    if not dated:
+        return []
+    cutoff = max(d for d, _ in dated) - timedelta(days=ITEM_LIST_KEEP_DAYS)
+    removed = []
+    for d, p in sorted(dated):
+        if d >= cutoff:
+            continue
+        try:
+            p.unlink()
+        except OSError:
+            continue
+        rel = p.relative_to(folder).as_posix()
+        conn.execute("DELETE FROM watched_files WHERE filename = ?", (rel,))
+        removed.append(rel)
+    return removed
+
+
+def _record_item_list(
+    conn, result: SyncResult, folder: Path, path: Path, rel_name: str, filesize: int, mtime: int
+) -> None:
+    """An item list found in the folder: import it if it's newer than the
+    current one (that's how one dropped straight into uploads/ gets used),
+    otherwise just note it. Never replaces the current list with an older
+    one — the dated copies under item_lists/ are older by definition."""
+    result.item_lists.append(rel_name)
+    try:
+        df, meta = parse_item_list(str(path))
+    except Exception as e:  # noqa: BLE001 — surfaced per-file, sync must not abort on one bad file
+        result.errors.append((rel_name, str(e)))
+        db.upsert_watched_file(conn, rel_name, filesize, mtime, None, "error", str(e))
+        return
+    current = db.get_item_catalog_meta(conn)
+    current_as_of = date.fromisoformat(current["as_of"]) if current else None
+    if meta.as_of is None:
+        detail = (
+            "An item list with no date in its banner, so it can't be compared with the current one — "
+            "upload it under Item code list on the Reports page instead."
+        )
+    elif df.empty:
+        detail = "An item list with no items in it — not used."
+    elif current_as_of is None or meta.as_of > current_as_of:
+        db.import_item_catalog(conn, df)
+        db.set_item_catalog_as_of(conn, meta.as_of)
+        if rel_name != ITEM_CATALOG_FILENAME:
+            shutil.copyfile(path, folder / ITEM_CATALOG_FILENAME)
+            st = (folder / ITEM_CATALOG_FILENAME).stat()
+            db.upsert_watched_file(
+                conn, ITEM_CATALOG_FILENAME, st.st_size, int(st.st_mtime), None, ITEM_LIST_STATUS,
+                f"The current item list (dated {meta.as_of.isoformat()}).",
+            )  # fmt: skip
+        archive_item_list(conn, folder, path, meta.as_of, path.suffix)
+        prune_item_list_archive(conn, folder)
+        result.item_lists_imported.append((rel_name, meta.as_of.isoformat()))
+        detail = f"Imported as the current item list (dated {meta.as_of.isoformat()})."
+    elif meta.as_of == current_as_of:
+        detail = f"The current item list (dated {meta.as_of.isoformat()})."
+    else:
+        detail = (
+            f"An item list dated {meta.as_of.isoformat()} — older than the current one "
+            f"({current_as_of.isoformat()}), so kept for the record but not used."
+        )
+    if (folder / rel_name).exists():  # the prune above may have just removed it
+        db.upsert_watched_file(conn, rel_name, filesize, mtime, None, ITEM_LIST_STATUS, detail)
 
 
 def sync_folder(conn: sqlite3.Connection, folder: str) -> SyncResult:
@@ -117,7 +222,7 @@ def sync_folder(conn: sqlite3.Connection, folder: str) -> SyncResult:
             # was, on every rescan) — re-check just those, so the false
             # "rejected file" clears itself instead of lingering forever.
             if known["status"] == "error" and is_item_list(str(path)):
-                _record_item_list(conn, result, rel_name, filesize, mtime)
+                _record_item_list(conn, result, folder_path, path, rel_name, filesize, mtime)
             else:
                 result.unchanged.append(rel_name)
             continue
@@ -126,7 +231,7 @@ def sync_folder(conn: sqlite3.Connection, folder: str) -> SyncResult:
         # there). It's not a stock statement, so don't report it as a broken
         # one.
         if is_item_list(str(path)):
-            _record_item_list(conn, result, rel_name, filesize, mtime)
+            _record_item_list(conn, result, folder_path, path, rel_name, filesize, mtime)
             continue
 
         try:

@@ -46,9 +46,11 @@ def test_existing_false_rejection_clears_on_next_rescan(tmp_path):
         r = sync_folder(conn, str(tmp_path))
         assert r.item_lists == ["item_catalog.xlsx"]
         assert db.list_watched_files_problems(conn).empty
-        # And it stays quiet on later rescans.
+        # And it stays quiet on later rescans (with no item list imported
+        # yet, the first rescan also adopted it and kept a dated copy).
         again = sync_folder(conn, str(tmp_path))
-        assert again.unchanged == ["item_catalog.xlsx"] and again.item_lists == []
+        assert "item_catalog.xlsx" in again.unchanged and again.item_lists == []
+        assert db.list_watched_files_problems(conn).empty
 
 
 def test_a_genuinely_broken_statement_is_still_rejected(tmp_path):

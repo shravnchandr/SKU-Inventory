@@ -194,6 +194,9 @@ ITEM_LIST_COLUMNS = [
 ]
 
 _ITEM_LIST_AS_OF_RE = re.compile(r"Item List as on (\d{2}/\d{2}/\d{4})")
+# Recognising the file only needs the words; the date is only needed to
+# compare one item list with another (see sync._record_item_list).
+_ITEM_LIST_BANNER_RE = re.compile(r"Item List as on", re.IGNORECASE)
 
 
 def parse_item_list_meta(raw: pd.DataFrame) -> ItemListMeta:
@@ -220,7 +223,7 @@ def is_item_list(path: str) -> bool:
     and gets the normal stock-statement handling (and error message).
     """
     return any(
-        raw is not None and _scan_banner(raw, _ITEM_LIST_AS_OF_RE)[2] is not None
+        raw is not None and _scan_banner(raw, _ITEM_LIST_BANNER_RE)[2] is not None
         for raw in (_banner_rows(path, sheet) for sheet in ("Sheet2", 0))
     )
 
