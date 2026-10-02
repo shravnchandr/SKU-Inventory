@@ -501,6 +501,11 @@ class TrendSeries:
     units_sold: list[float]
     top_brands: list[str]
     brand_units_sold: dict[str, list[float]]  # brand -> per-period units sold
+    # On-hand totals as of each report's end — the same figures as the
+    # Dashboard's KPI tiles, per report, so a tile can say how it changed.
+    units_on_hand: list[float] = field(default_factory=list)
+    sku_counts: list[int] = field(default_factory=list)
+    brand_counts: list[int] = field(default_factory=list)
 
 
 @dataclass
@@ -751,7 +756,11 @@ def summarize_history(
 
     # --- trend series, one point per imported report ---
     per_report = all_entries.groupby("report_id").agg(
-        value=("value", "sum"), sales=("sales", "sum")
+        value=("value", "sum"),
+        sales=("sales", "sum"),
+        units=("closing_stock", "sum"),
+        skus=("sku", "nunique"),
+        brands=("brand", "nunique"),
     )
     reports_ordered = reports.merge(per_report, on="report_id")
     labels = [
@@ -781,6 +790,9 @@ def summarize_history(
         units_sold=[round(float(v), 2) for v in reports_ordered["sales"]],
         top_brands=top_brand_names,
         brand_units_sold=brand_units_sold,
+        units_on_hand=[round(float(v), 0) for v in reports_ordered["units"]],
+        sku_counts=[int(v) for v in reports_ordered["skus"]],
+        brand_counts=[int(v) for v in reports_ordered["brands"]],
     )
 
     meta = HistoryMeta(

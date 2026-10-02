@@ -155,6 +155,26 @@ DEFAULT_THRESHOLDS: ThresholdValues = {
 }
 
 
+def _previous_month_kpis(trend) -> dict | None:
+    """The KPI figures as of the last report ending in an earlier calendar
+    month than the latest one — "since last month", even if more than one
+    report a month is ever imported. None with only one month imported."""
+    if not trend.period_ends:
+        return None
+    latest_month = trend.period_ends[-1][:7]
+    for i in range(len(trend.period_ends) - 1, -1, -1):
+        if trend.period_ends[i][:7] < latest_month:
+            return {
+                "label": trend.labels[i],
+                "period_end": trend.period_ends[i],
+                "total_skus": trend.sku_counts[i],
+                "total_brands": trend.brand_counts[i],
+                "total_value": trend.inventory_value[i],
+                "total_units": trend.units_on_hand[i],
+            }
+    return None
+
+
 def build_payload(
     summary: InventorySummary,
     quality_issues: list[dict] | None = None,
@@ -236,6 +256,7 @@ def build_payload(
             "total_value": round(summary.total_value, 2),
             "total_units": round(summary.total_units, 0),
         },
+        "kpis_previous": _previous_month_kpis(summary.trend),
         "status_breakdown": status_rows,
         "top_brands_by_value": [
             {"label": r["brand"], "brand": r["brand"], "value": round(r["value"], 2)}
