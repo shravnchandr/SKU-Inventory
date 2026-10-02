@@ -58,6 +58,75 @@ Rules that keep this safe:
 | Renamed items: join up history across name changes; review uncertain renames | 2026-10-01 | `9cab877` | `merged/sku-identity` | New table (see below) |
 | Overstock only once a product has been around for `overstock_days` | 2026-10-01 | `a521356` | `merged/overstock-min-age` | No |
 | Dead stock: any real stock arrival resets the clock, not only paid purchases | 2026-10-01 | `ebd193b` | `merged/dead-stock-arrivals` | No |
+| Renamed items: changed pack size/strength never suggested; long-name/prefix codes need same spelling | 2026-10-01 | `bebab11` | `merged/review-skip-size-changes` | No |
+| Review page + top-bar tab with count badge | 2026-10-01 | `07cb4b7` | `merged/review-page` | No |
+| Review keyboard shortcuts (depends on review page) | 2026-10-01 | `c5ee3db` | `merged/review-shortcuts` | No |
+| KPI tiles: change since last month, short amounts | 2026-10-01 | `ce1cc1b` | `merged/kpi-tiles` | No |
+| Dashboard: Download all lists (Excel) | 2026-10-01 | `9e5d5f7` | `merged/excel-all-lists` | No |
+| Dashboard: stale-data notice (>35 days) | 2026-10-01 | `f796fd3` | `merged/stale-data-banner` | No |
+| Value segments: share of stock value per tile | 2026-10-01 | `b4435e6` | `merged/segment-value-share` | No |
+
+### Review list rules tightened — `fix/review-skip-size-changes`
+
+Recall: `git revert -m 1 bebab11`
+
+- A pair where a number was *replaced* (strength, pack size, count —
+  "CLINDAC A GEL 20GM" → "30GM") is never suggested; one where a number was
+  only added/removed still is. A code matched only via the item list's long
+  name or 25-character cut-off merges automatically only with the same
+  spelling (the item list has codes whose short and long names name
+  different variants). Spelling match also tolerates a moved space next to
+  a unit. The renamed-items export fills in brands for merged rows.
+- Tests: `tests/test_identity.py`, `tests/test_sku_merges_api.py`.
+
+### Review page — `feature/review-page`
+
+Recall: revert `feature/review-shortcuts` **first** (it builds on this), then
+`git revert -m 1 07cb4b7`.
+
+- `/review` holds the renamed-items card (moved from Reports); a "Review"
+  tab in the top bar shows the pending count (`GET /api/review-count`,
+  fetched after page load). Import health links to it.
+
+### Review keyboard shortcuts — `feature/review-shortcuts`
+
+Recall: `git revert -m 1 c5ee3db`
+
+- ↑/↓ or J/K move a highlighted row; M merge, N not the same, U undo;
+  after a decision the cursor moves to the next undecided row. Ignored
+  while typing or with a dialog open.
+
+### KPI tiles — `feature/kpi-tiles`
+
+Recall: `git revert -m 1 ce1cc1b`
+
+- Each tile shows the change vs the last report ending in an earlier
+  calendar month (`kpis_previous` in the payload, from new per-report
+  totals in the trend series); the value tile reads "₹1.43 Cr" with the
+  exact amount in its tooltip (`fmtINRShort` in base.html).
+- Tests: `tests/test_kpi_tiles.py`.
+
+### Download all lists — `feature/excel-all-lists`
+
+Recall: `git revert -m 1 9e5d5f7`
+
+- `GET /api/action-lists/export.xlsx`: Summary + one sheet per action list,
+  every row; same workbook as the CLI's `--excel` (shared code).
+- Tests: `tests/test_action_lists_export.py`.
+
+### Stale-data notice — `feature/stale-data-banner`
+
+Recall: `git revert -m 1 f796fd3`
+
+- Dashboard notice when the latest import is more than `STALE_DATA_DAYS`
+  (35) days old, by this computer's local date.
+- Tests: `tests/test_stale_data_banner.py`.
+
+### Segment value share — `feature/segment-value-share`
+
+Recall: `git revert -m 1 b4435e6`
+
+- Each value-segment tile adds "N% of stock value" (share of all nine).
 
 ### Renamed items — `feature/sku-identity`
 

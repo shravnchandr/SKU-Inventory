@@ -55,7 +55,10 @@ stop the app. Everything from here on is point-and-click:
   fixing a wrong upload.
 - **Dashboard page** — stock health (out-of-stock, low-stock, dead-stock,
   overstock) and searchable/sortable action lists with an **Export CSV**
-  button on each. Click any SKU — in an action-list row or a brand's detail
+  button on each, plus **Download all lists (Excel)** for every list in
+  full. The headline tiles show how each figure changed since last month
+  ("▼ ₹20.7 L vs Jul 2026"), and a notice appears if the latest import is
+  more than 35 days old. Click any SKU — in an action-list row or a brand's detail
   panel — to open its own detail panel: full period-by-period history and a
   mini trend chart. An empty action list says so plainly ("Nothing is out of
   stock") rather than looking broken. The Dead Stock tab also breaks its
@@ -111,7 +114,8 @@ stop the app. Everything from here on is point-and-click:
   disappears from one report to the next while the reporting period itself
   stays fully covered — see "Current-state blind spot" below, which is a
   different, currently-undetected problem.
-- **Renamed items** (on the Reports page) — the same item can show up under
+- **Review page** (top bar, with a count of items waiting) — **Renamed
+  items**: the same item can show up under
   a new name from one month to the next: tagged "(NON)" before being sent
   back, "ZZ"-prefixed, "(RECALL)", or respelled by the POS ("IODEX 8G" →
   "IODEX 8GM"). Keyed on names alone, that would split one item's history in
@@ -124,7 +128,11 @@ stop the app. Everything from here on is point-and-click:
   different products. If stock carried over between two such names, the pair
   is listed under **To review** with the differing words highlighted —
   approve ("Same item — merge") or reject ("Not the same") each one; work
-  through 50 today and the rest another day, decisions are saved. Every
+  through 50 today and the rest another day, decisions are saved. A pair
+  where a number was *replaced* — a different strength, pack size or count,
+  like "CLINDAC A GEL 20GM" → "30GM" — isn't listed at all: it's a
+  different product. Keyboard: ↑/↓ (or J/K) to move, **M** same item,
+  **N** not the same, **U** undo. Every
   automatic merge can be split with "Not the same item", which overrides
   everything, item codes included, and every decision has an Undo. Nothing
   in your imported reports is changed. Upload the item list each month with
