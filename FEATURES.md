@@ -55,6 +55,58 @@ Rules that keep this safe:
 | Browser-tab icon (no more /favicon.ico 404) | 2026-10-01 | `cb3e0c2` | `merged/favicon` | No |
 | Every page fits phone width (top bar wraps; status rows stack; Reports tables scroll in place) | 2026-10-01 | `485fd79` | `merged/mobile-nav` | No |
 | Data-quality warning on Reports can be dismissed | 2026-10-01 | `e47e0ce` | `merged/dismiss-data-quality` | No |
+| Renamed items: join up history across name changes; review uncertain renames | 2026-10-01 | `9cab877` | `merged/sku-identity` | New table (see below) |
+| Overstock only once a product has been around for `overstock_days` | 2026-10-01 | `a521356` | `merged/overstock-min-age` | No |
+| Dead stock: any real stock arrival resets the clock, not only paid purchases | 2026-10-01 | `ebd193b` | `merged/dead-stock-arrivals` | No |
+
+### Renamed items — `feature/sku-identity`
+
+Recall: `git revert -m 1 9cab877`
+
+- New `identity.py` groups stock-statement names into items at load time;
+  every analysis then sees one item under its latest name. Stored rows are
+  never changed. Automatic only on: same item code (a code matched only on
+  the item list's 25-character name cut-off also needs identical numbers),
+  pharmacy tag differences ((NON), ZZ, (RECALL)), or identical spelling with
+  stock carried over exactly. Different numbers/words are never automatic.
+- Reports → **Renamed items** card: To review (approve/reject, 50 at a
+  time), Merged automatically (split any), Your decisions (undo any).
+  Search finds items by old names; SKU panel shows "Also listed as".
+- "Returned" now judges "nothing sold" since the item got its current name,
+  so a (NON)-tagged item sent back isn't shown as out of stock.
+- DB: adds table `sku_merge_decisions` (CREATE IF NOT EXISTS). Reverting
+  the code leaves it in place, unused — harmless; decisions come back if the
+  feature is re-applied.
+- Endpoints: `GET /api/sku-merges`, `POST /api/sku-merges`,
+  `POST /api/sku-merges/undo`, `GET /api/sku-merges/export.csv`.
+- Tests: `tests/test_identity.py`, `tests/test_sku_merges_api.py`.
+
+### Overstock minimum age — `fix/overstock-min-age`
+
+Recall: `git revert -m 1 a521356`
+
+- Overstock requires the product's age (from the end of the first report it
+  appears in) ≥ `overstock_days`; younger ones show Healthy. Products in the
+  earliest report, or first appearing with opening stock, count as old.
+  Value segments still call such a product Slow (pace, not age).
+- Tests: `tests/test_overstock_min_age.py`.
+
+### Dead stock counts real arrivals — `fix/dead-stock-arrivals`
+
+Recall: `git revert -m 1 ebd193b`
+
+- The dead-stock clock resets on a paid purchase, free/scheme units, or a
+  transfer in larger than same-period returns/adjustments. Swaps (5 in, 5
+  out) don't reset it.
+- Tests: `tests/test_dead_stock_arrivals.py`.
+
+### Verification (2026-10-01)
+
+Action lists and Value segments were checked SKU by SKU against an
+independent reference implementation of the documented rules, on real data
+with saved settings and on the uploads data with defaults — every status,
+action-list figure, status-bar total, value tier, movement and tile matched,
+before and after these three changes.
 
 ### Dismissible data-quality warning — `feature/dismiss-data-quality`
 

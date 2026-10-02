@@ -111,6 +111,24 @@ stop the app. Everything from here on is point-and-click:
   disappears from one report to the next while the reporting period itself
   stays fully covered — see "Current-state blind spot" below, which is a
   different, currently-undetected problem.
+- **Renamed items** (on the Reports page) — the same item can show up under
+  a new name from one month to the next: tagged "(NON)" before being sent
+  back, "ZZ"-prefixed, "(RECALL)", or respelled by the POS ("IODEX 8G" →
+  "IODEX 8GM"). Keyed on names alone, that would split one item's history in
+  two. When the app is sure two names are the same item — the same code in
+  your item list, only a tag differs, or the identical spelling with the
+  stock carried over exactly — it joins them up everywhere (dashboard,
+  history, dead-stock age, search, exports), under the item's latest name.
+  It is never sure from the name alone when a word or number differs: "DOLO
+  200MG" and "DOLO 800MG", or "GLOEYE TAB" and "GLOEYE PLUS TAB", are
+  different products. If stock carried over between two such names, the pair
+  is listed under **To review** with the differing words highlighted —
+  approve ("Same item — merge") or reject ("Not the same") each one; work
+  through 50 today and the rest another day, decisions are saved. Every
+  automatic merge can be split with "Not the same item", which overrides
+  everything, item codes included, and every decision has an Undo. Nothing
+  in your imported reports is changed. Upload the item list each month with
+  the stock statement: renames it records are recognised from its codes.
 - **Item code list** (on the Reports page, collapsed — optional) — upload
   your POS system's master item list (a stable code per item, independent of
   whatever name it's currently sold under) and the app can tell an actual
