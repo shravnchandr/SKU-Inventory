@@ -149,6 +149,17 @@ CREATE INDEX IF NOT EXISTS idx_item_name_changes_old ON item_name_changes(old_na
 -- that pair is the webapp cache's fingerprint for this table. Added later
 -- than the rest of the schema; nothing else references it, so code from
 -- before it existed simply ignores it.
+-- The current item list's own "as on" date, from its banner (the parser
+-- reads it; item_catalog itself only knows when rows were imported). One
+-- row, replaced by every successful item-list upload — NULL when that file
+-- had no date, so an older upload's date can't linger. Used to remind
+-- people when the item list is older than the latest stock statement.
+CREATE TABLE IF NOT EXISTS item_catalog_info (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    as_of TEXT,
+    recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE IF NOT EXISTS sku_merge_decisions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     old_name TEXT NOT NULL,
@@ -817,6 +828,8 @@ def get_name_change_map(conn: sqlite3.Connection) -> dict[str, str]:
 class CatalogMeta(TypedDict):
     imported_at: str
     item_count: int
+    as_of: str  # ISO date: the list's own date, or its upload date if the file had none
+    as_of_from_file: bool
 
 
 def get_item_catalog_meta(conn: sqlite3.Connection) -> CatalogMeta | None:
@@ -826,7 +839,25 @@ def get_item_catalog_meta(conn: sqlite3.Connection) -> CatalogMeta | None:
     row = conn.execute("SELECT MAX(imported_at), COUNT(*) FROM item_catalog").fetchone()
     if row is None or row[1] == 0:
         return None
-    return {"imported_at": row[0], "item_count": row[1]}
+    info = conn.execute("SELECT as_of FROM item_catalog_info WHERE id = 1").fetchone()
+    as_of = info[0] if info and info[0] else None
+    return {
+        "imported_at": row[0],
+        "item_count": row[1],
+        # Lists uploaded before the date was recorded (or whose banner had
+        # none) fall back to the day they were uploaded.
+        "as_of": as_of or str(row[0])[:10],
+        "as_of_from_file": as_of is not None,
+    }
+
+
+def set_item_catalog_as_of(conn: sqlite3.Connection, as_of: date | None) -> None:
+    """Record the just-imported item list's own date (None if it had none)."""
+    conn.execute(
+        "INSERT INTO item_catalog_info (id, as_of, recorded_at) VALUES (1, ?, datetime('now')) "
+        "ON CONFLICT(id) DO UPDATE SET as_of = excluded.as_of, recorded_at = excluded.recorded_at",
+        (as_of.isoformat() if as_of else None,),
+    )
 
 
 def list_item_catalog_names(conn: sqlite3.Connection) -> set[str]:

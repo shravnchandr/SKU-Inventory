@@ -113,6 +113,7 @@
     <div class="card-sub" id="health-refresh"></div>
     <div id="health-gaps"></div>
     <div id="health-problems"></div>
+    <div id="health-item-list"></div>
     <div id="health-churn"></div>
     <div id="health-quality"></div>
   </div>
@@ -131,11 +132,11 @@
 
     <details class="card-collapsible" id="card-item-catalog" style="margin-top:18px">
       <summary>
-        <span style="font-weight:600;font-size:var(--text-base)">Item code list <span style="color:var(--text-muted);font-weight:400">(optional)</span></span>
+        <span style="font-weight:600;font-size:var(--text-base)">Item code list <span style="color:var(--text-muted);font-weight:400">(upload monthly)</span></span>
         <span class="disclosure-icon" aria-hidden="true">▸</span>
       </summary>
       <div class="card-collapsible-body">
-        <div class="card-sub">Your POS system's master item list — a stable code per item that keeps working even when a product's name changes on a stock statement. Upload it here so a renamed or vanished SKU (flagged above, in Import health) can be checked against it. Not something you need to touch often.</div>
+        <div class="card-sub">Your POS system's master item list — a stable code per item that keeps working even when a product's name changes on a stock statement. Upload a fresh one every month, along with the stock statement: renamed items are then recognised from their codes and their history is joined up automatically (see the Review page). Import health reminds you when it's older than the latest report.</div>
         <div id="catalog-status"></div>
         <div class="dropzone" id="dropzone-catalog">
           <div class="dz-icon">📇</div>
@@ -277,10 +278,12 @@ async function loadImportHealth() {
     // longer counts as an outstanding issue — that's what dismissing means.
     const qualityDismissed = quality.total > 0 && isQualityDismissed(quality);
     const hasQuality = quality.total > 0 && !qualityDismissed;
+    const itemListReminder = data.item_list_reminder || null;
     const renames = data.renames || { merged: 0, pending: 0 };
     const hasPendingRenames = renames.pending > 0;
     const issueCount = data.missing_months.length + data.coverage_gaps.length + data.problem_files.length
-      + (hasChurn ? 1 : 0) + (hasUnmatched ? 1 : 0) + (hasQuality ? 1 : 0) + (hasPendingRenames ? 1 : 0);
+      + (hasChurn ? 1 : 0) + (hasUnmatched ? 1 : 0) + (hasQuality ? 1 : 0) + (hasPendingRenames ? 1 : 0)
+      + (itemListReminder ? 1 : 0);
 
     // The card only takes up space on the page when there's actually
     // something to look at — same conditional-hide pattern as the Data
@@ -294,7 +297,7 @@ async function loadImportHealth() {
     pill.classList.remove('health-pill-clickable');
     pill.removeAttribute('role');
     pill.removeAttribute('tabindex');
-    if (!hasGaps && !hasProblems && !hasChurn && !hasUnmatched && !hasQuality && !hasPendingRenames) {
+    if (!hasGaps && !hasProblems && !hasChurn && !hasUnmatched && !hasQuality && !hasPendingRenames && !itemListReminder) {
       pill.style.background = getComputedStyle(document.documentElement).getPropertyValue('--status-good').trim();
       pill.textContent = '✓ Import health good';
       healthCard.style.display = 'none';
@@ -352,6 +355,22 @@ async function loadImportHealth() {
           </tbody>
         </table></div>`;
     }
+
+    // The item list is meant to be uploaded every month with the stock
+    // statement — rename detection only sees a rename once a list from
+    // after it has been uploaded.
+    const itemListEl = document.getElementById('health-item-list');
+    itemListEl.innerHTML = itemListReminder ? `
+      <div class="health-row health-warn">
+        <span class="icon">⚠</span>
+        <span>${escapeHtml(itemListReminder.message)}</span>
+        <button class="health-action" id="jump-to-item-list" type="button">Upload item list</button>
+      </div>` : '';
+    document.getElementById('jump-to-item-list')?.addEventListener('click', () => {
+      const details = document.getElementById('card-item-catalog');
+      details.open = true;
+      details.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
 
     const churnEl = document.getElementById('health-churn');
     // Renamed items first: they explain (and remove) what would otherwise
@@ -510,7 +529,12 @@ function renderCatalogCard(catalog, unmatched) {
   }
 
   titleEl.textContent = 'Drag a refreshed item list here to replace it';
-  statusEl.innerHTML = `<div class="catalog-summary">Last updated ${fmtDateTime(catalog.imported_at) || '–'} · ${catalog.item_count.toLocaleString('en-IN')} items</div>`;
+  // The list's own date ("Item List as on …"), read off the ISO text — no
+  // new Date(), which can shift a day in a timezone behind UTC.
+  const [ay, am, ad] = String(catalog.as_of || '').split('-');
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const dated = catalog.as_of_from_file && months[Number(am) - 1] ? ` · list dated ${Number(ad)} ${months[Number(am) - 1]} ${ay}` : '';
+  statusEl.innerHTML = `<div class="catalog-summary">Last updated ${fmtDateTime(catalog.imported_at) || '–'}${dated} · ${catalog.item_count.toLocaleString('en-IN')} items</div>`;
 
   const total = unmatched.total || 0;
   const items = unmatched.items || [];
@@ -659,10 +683,15 @@ function setupDropzone({ dzId, inputId, queueId, endpoint, onSuccess, afterEach 
 setupDropzone({
   dzId: 'dropzone', inputId: 'file-input', queueId: 'upload-queue',
   endpoint: '/api/upload',
-  onSuccess: data => `✓ ${data.period_start} to ${data.period_end} · ${data.sku_count.toLocaleString('en-IN')} SKUs` +
-    (data.superseded_report_ids?.length
-      ? ` (replaced ${data.superseded_report_ids.length} earlier report${data.superseded_report_ids.length === 1 ? '' : 's'} it overlapped)`
-      : ''),
+  onSuccess: data => {
+    // Right after a new month lands is when a stale item list matters — say
+    // so (just after the "Imported" toast, so the two don't overlap).
+    if (data.item_list_reminder) setTimeout(() => toast(data.item_list_reminder.message), 400);
+    return `✓ ${data.period_start} to ${data.period_end} · ${data.sku_count.toLocaleString('en-IN')} SKUs` +
+      (data.superseded_report_ids?.length
+        ? ` (replaced ${data.superseded_report_ids.length} earlier report${data.superseded_report_ids.length === 1 ? '' : 's'} it overlapped)`
+        : '');
+  },
   afterEach: refreshReportsFromServer,
 });
 
