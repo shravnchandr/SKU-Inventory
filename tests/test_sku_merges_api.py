@@ -185,3 +185,9 @@ def test_every_page_has_the_review_tab(client):
 def test_review_count_with_no_data(tmp_path):
     app = create_app(db_path=str(tmp_path / "empty.db"), uploads_dir=str(tmp_path / "u"))
     assert app.test_client().get("/api/review-count").get_json() == {"pending": 0}
+
+
+def test_review_page_has_keyboard_shortcuts(client):
+    c, _ = client
+    html = c.get("/review").data.decode()
+    assert "kb-hint" in html and "document.addEventListener('keydown'" in html
