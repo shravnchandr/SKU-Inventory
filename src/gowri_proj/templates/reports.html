@@ -163,11 +163,8 @@
 <script>
 let REPORTS = JSON.parse(document.getElementById('reports-data').textContent);
 
-function fmtDate(iso) {
-  if (!iso) return '–';
-  const d = new Date(iso);
-  return d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' });
-}
+// Report period dates — see fmtIsoDate in base.html for why not new Date().
+const fmtDate = iso => fmtIsoDate(iso);
 
 // Indian financial year (Apr-Mar), matching sync.fy_folder() server-side —
 // same grouping the uploads/ folder itself now uses (see the upload flow).
@@ -529,11 +526,8 @@ function renderCatalogCard(catalog, unmatched) {
   }
 
   titleEl.textContent = 'Drag a refreshed item list here to replace it';
-  // The list's own date ("Item List as on …"), read off the ISO text — no
-  // new Date(), which can shift a day in a timezone behind UTC.
-  const [ay, am, ad] = String(catalog.as_of || '').split('-');
-  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  const dated = catalog.as_of_from_file && months[Number(am) - 1] ? ` · list dated ${Number(ad)} ${months[Number(am) - 1]} ${ay}` : '';
+  // The list's own date ("Item List as on …").
+  const dated = catalog.as_of_from_file ? ` · list dated ${fmtIsoDate(catalog.as_of, { dayPadded: false })}` : '';
   statusEl.innerHTML = `<div class="catalog-summary">Last updated ${fmtDateTime(catalog.imported_at) || '–'}${dated} · ${catalog.item_count.toLocaleString('en-IN')} items</div>`;
 
   const total = unmatched.total || 0;
