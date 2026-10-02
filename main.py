@@ -204,6 +204,11 @@ def _resolve_thresholds(conn: sqlite3.Connection, args: argparse.Namespace) -> S
     for key, value in overrides.items():
         if value is not None:
             settings[key] = value
+    if settings["low_stock_days"] >= settings["overstock_days"]:
+        raise SystemExit(
+            f"Low stock ({settings['low_stock_days']} days) must be fewer days of cover than "
+            f"overstock ({settings['overstock_days']} days) — adjust --low-stock-days/--overstock-days."
+        )
     return settings
 
 

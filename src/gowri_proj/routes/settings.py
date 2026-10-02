@@ -44,6 +44,16 @@ def register(app: Flask, data: DataCache) -> None:
                         error=f"'{field_name}' must be between {THRESHOLD_PCT_MIN} and {THRESHOLD_PCT_MAX} percent."
                     ), 400
             values[field_name] = value
+        # Low stock is checked before overstock, so a low-stock threshold at
+        # or above the overstock one would silently leave nothing that could
+        # ever be "healthy" between them.
+        if values["low_stock_days"] >= values["overstock_days"]:
+            return jsonify(
+                error=(
+                    f"Low stock ({values['low_stock_days']} days) must be fewer days of cover than "
+                    f"overstock ({values['overstock_days']} days)."
+                )
+            ), 400
         if values["value_tier_a_pct"] >= values["value_tier_b_pct"]:
             return jsonify(error="'value_tier_a_pct' must be less than 'value_tier_b_pct'."), 400
         with db.connect(app.config["DB_PATH"]) as conn:
