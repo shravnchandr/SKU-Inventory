@@ -51,7 +51,12 @@ from .dashboard import (
     _segment_policy,
     build_payload,
 )
-from .excel_export import value_segment_columns, value_segment_rows, value_segments_workbook
+from .excel_export import (
+    action_lists_workbook,
+    value_segment_columns,
+    value_segment_rows,
+    value_segments_workbook,
+)
 from .parser import parse_item_list, parse_stock_statement
 from .sync import DEFAULT_UPLOADS_DIR, fy_folder, sync_folder
 from .update_check import UpdateStatus, check_for_update
@@ -990,6 +995,21 @@ def create_app(
                 ("value", "Value"),
             ],
             "sku_changes.csv",
+        )
+
+    @app.get("/api/action-lists/export.xlsx")
+    def api_action_lists_export_xlsx():
+        """Every action list (out of stock, low, dead, overstock) in full,
+        one sheet each, plus a Summary — the Dashboard's "Download all
+        lists" button. Same workbook the CLI writes with --excel."""
+        _, summary, _ = get_current_data()
+        if summary is None:
+            return jsonify(error="No reports imported yet — nothing to export."), 404
+        filename = f"action_lists_{summary.meta.latest_period_end.isoformat()}.xlsx"
+        return Response(
+            action_lists_workbook(summary),
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
     @app.get("/api/value-segments/export.xlsx")
