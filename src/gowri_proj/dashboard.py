@@ -68,7 +68,7 @@ def _status_blurbs(thresholds: ThresholdValues) -> dict[str, str]:
         "returned": "Zero on hand, nothing sold — stock was sent back, not sold through.",
         "low_stock": f"Selling well but under {low} days of cover left.",
         "dead_stock": f"Stock on hand, nothing sold since it was last purchased ({dead_desc}).",
-        "overstock": f"Over {over} days of cover — capital tied up.",
+        "overstock": f"Over {over} days of cover, on the shelf {over}+ days — capital tied up.",
         "healthy": "Comfortable stock relative to recent sales pace.",
     }
 

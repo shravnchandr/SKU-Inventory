@@ -183,7 +183,14 @@ built-in defaults.
   further splits this list into 90–179 / 180–364 / 365+ day-old buckets.
 - **Other status buckets**: `out_of_stock` (zero on hand), `low_stock`
   (below `low_stock_days`, default 15, days of cover), `overstock` (above
-  `overstock_days`, default 90, days of cover), `healthy` (everything else).
+  `overstock_days`, default 90, days of cover — and only once the product has
+  been around for at least that many days, so a product first stocked last
+  month isn't called overstock just for being new; its age counts from the
+  end of the first report it appears in, and anything already in your
+  earliest imported report, or first appearing with opening stock carried
+  in, counts as old), `healthy` (everything else). In Value segments, a
+  product too new for Overstock but with that much cover still counts as
+  Slow — movement there describes pace, not age.
 - **Value segments** (also Settings-editable — `value_tier_a_pct`/
   `value_tier_b_pct`, defaults 70/90): every currently-stocked SKU is sorted
   by value, highest first, and given a tier based on the running cumulative

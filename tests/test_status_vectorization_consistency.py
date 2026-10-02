@@ -105,6 +105,7 @@ def test_vectorized_status_matches_status_function_for_every_row():
             row["is_returned"],
             LOW_STOCK_DAYS,
             OVERSTOCK_DAYS,
+            row["is_too_new"],
         )
         assert row["status"] == expected, (
             f"{row['sku']}: vectorized={row['status']!r} but _status()={expected!r}"

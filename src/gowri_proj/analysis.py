@@ -208,7 +208,9 @@ def _compute_value_tiers(current: pd.DataFrame, a_pct: float, b_pct: float) -> p
     return pd.Series(tier, index=ordered["sku"], name="tier")
 
 
-def _compute_value_segments(merged: pd.DataFrame, a_pct: float, b_pct: float) -> pd.DataFrame:
+def _compute_value_segments(
+    merged: pd.DataFrame, a_pct: float, b_pct: float, overstock_days: float = OVERSTOCK_DAYS
+) -> pd.DataFrame:
     """Per-SKU ABC-tier x movement segment, for every currently-stocked,
     moving-or-not-moving SKU (out_of_stock/returned excluded — see
     MOVEMENT_BY_STATUS).
@@ -227,11 +229,21 @@ def _compute_value_segments(merged: pd.DataFrame, a_pct: float, b_pct: float) ->
                 "segment",
             ]
         )
-    segments = merged[merged["sku"].isin(tiers.index)][
-        ["brand", "sku", "value", "days_of_cover", "status"]
-    ].copy()
+    cols = ["brand", "sku", "value", "days_of_cover", "status"]
+    if "is_too_new" in merged.columns:
+        cols.append("is_too_new")
+    segments = merged[merged["sku"].isin(tiers.index)][cols].copy()
     segments["tier"] = segments["sku"].map(tiers)
     segments["movement"] = segments["status"].map(MOVEMENT_BY_STATUS)
+    # Movement here describes *pace*. A product too new to be called
+    # overstock (see is_too_new in summarize_history) is "healthy" in the
+    # action lists, but with more than overstock_days of cover it isn't
+    # selling fast — keep it "slow" here rather than letting the age rule
+    # turn an unsold new product into a "fast" mover.
+    if "is_too_new" in segments.columns:
+        slow_but_new = segments["is_too_new"] & (segments["days_of_cover"] > overstock_days)
+        segments.loc[slow_but_new & (segments["status"] == "healthy"), "movement"] = "slow"
+        segments = segments.drop(columns="is_too_new")
     segments = segments.dropna(subset=["movement"])
     if segments.empty:
         # Every stocked SKU was out_of_stock/returned (excluded above) or had
@@ -308,6 +320,7 @@ def _status(
     is_returned: bool = False,
     low_stock_days: int = LOW_STOCK_DAYS,
     overstock_days: int = OVERSTOCK_DAYS,
+    is_too_new: bool = False,
 ) -> str:
     if closing_stock <= 0:
         # Zero stock with nothing sold, but stock actually left (a return/
@@ -319,7 +332,9 @@ def _status(
         return "dead_stock"
     if days_of_cover < low_stock_days:
         return "low_stock"
-    if days_of_cover > overstock_days:
+    # A product newer than overstock_days hasn't had the time to be "too
+    # much stock for its pace" — see is_too_new in summarize_history.
+    if days_of_cover > overstock_days and not is_too_new:
         return "overstock"
     return "healthy"
 
@@ -596,6 +611,31 @@ def summarize_history(
     merged = merged.merge(dead_flags, on="sku", how="left")
     merged["is_dead"] = merged["is_dead"].fillna(False)
     merged["days_since_activity"] = merged["days_since_activity"].fillna(0).astype(int)
+
+    # --- product age: too new to call overstock ---
+    # "Over N days of cover" only means "capital tied up" once the product
+    # has been around for N days — a product first stocked last month with
+    # few or no sales yet would otherwise land in Overstock purely for being
+    # new. Age counts from the *end* of the first report it appears in: the
+    # youngest it could be (a report says the period, not the day stock
+    # arrived), so a product is never called overstock early. Two kinds of
+    # first appearance aren't "new" at all and are left out: anything in the
+    # earliest imported report (already on the shelf when tracking began),
+    # and anything that first appears *with* opening stock (that stock was
+    # carried in, e.g. under a name it no longer has).
+    first_seen = (
+        all_entries[["sku", "report_id", "period_start", "period_end", "opening_stock"]]
+        .sort_values(["period_end", "period_start"])
+        .drop_duplicates("sku")
+        .set_index("sku")
+    )
+    age_days = (latest["period_end"] - first_seen["period_end"]).dt.days
+    too_new = (
+        (first_seen["report_id"] != reports.iloc[0]["report_id"])
+        & (first_seen["opening_stock"] <= 0)
+        & (age_days < overstock_days)
+    )
+    merged["is_too_new"] = merged["sku"].map(too_new).fillna(False).astype(bool)
     # daily_demand (not daily_sales) drives days_of_cover/status below —
     # paid sales *and* sales_free (scheme/free-goods units) both leave the
     # shelf the same way, so both count as real depletion. Paid-only
@@ -626,7 +666,7 @@ def summarize_history(
             merged["closing_stock"] <= 0,
             merged["is_dead"],
             merged["days_of_cover"] < low_stock_days,
-            merged["days_of_cover"] > overstock_days,
+            (merged["days_of_cover"] > overstock_days) & ~merged["is_too_new"],
         ],
         ["returned", "out_of_stock", "dead_stock", "low_stock", "overstock"],
         default="healthy",
@@ -674,7 +714,9 @@ def summarize_history(
     dead_stock_df = subset("dead_stock", "value", extra_cols=["days_since_activity"])
     dead_stock_aging = _dead_stock_aging(dead_stock_df)
 
-    value_segment_skus = _compute_value_segments(merged, value_tier_a_pct, value_tier_b_pct)
+    value_segment_skus = _compute_value_segments(
+        merged, value_tier_a_pct, value_tier_b_pct, overstock_days
+    )
     value_segments = _value_segment_summary(value_segment_skus)
 
     # --- trend series, one point per imported report ---
