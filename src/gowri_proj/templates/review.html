@@ -26,6 +26,14 @@
      actually needs to look at ("200MG" vs "800MG"). */
   .name-diff { background: color-mix(in srgb, var(--status-warning) 28%, transparent); color: var(--text-primary); border-radius: 3px; padding: 0 2px; }
   .renames-empty { color: var(--text-muted); padding: 14px 0; }
+  /* The row keyboard shortcuts act on. */
+  table.renames tr.kb-current td { background: var(--surface-2); }
+  table.renames tr.kb-current td:first-child { box-shadow: inset 3px 0 0 var(--accent); }
+  .kb-hint { font-size: var(--text-sm); color: var(--text-muted); }
+  .kb-hint kbd {
+    font-family: inherit; font-size: var(--text-xs); border: 1px solid var(--border); border-bottom-width: 2px;
+    border-radius: 4px; padding: 0 5px; background: var(--surface-1); color: var(--text-secondary);
+  }
   @media (max-width: 760px) { table.renames { min-width: 640px; } }
 </style>
 {% endblock %}
@@ -59,7 +67,7 @@
 // sitting shouldn't mean a full reload after each one. The lists themselves
 // are refetched when switching tabs (that's when the server re-groups).
 const RENAMES_PAGE = 50;
-const renames = { tab: null, data: null, shown: RENAMES_PAGE, filter: '', local: new Map() };
+const renames = { tab: null, data: null, shown: RENAMES_PAGE, filter: '', local: new Map(), cursor: 0, page: [] };
 const REASON_LABELS = {
   'same item code': 'Same item code in your item list',
   'pharmacy tag': 'Only a tag differs — (NON), ZZ or (RECALL)',
@@ -125,7 +133,7 @@ function renderRenames() {
   const tabsEl = document.getElementById('renames-tabs');
   tabsEl.innerHTML = tabs.map(t => `<button class="tab-btn${t.key === renames.tab ? ' active' : ''}" data-key="${t.key}" type="button">${t.label}</button>`).join('');
   tabsEl.querySelectorAll('.tab-btn').forEach(b => b.addEventListener('click', () => {
-    renames.tab = b.dataset.key; renames.shown = RENAMES_PAGE; renames.filter = '';
+    renames.tab = b.dataset.key; renames.shown = RENAMES_PAGE; renames.filter = ''; renames.cursor = 0;
     document.getElementById('renames-body').innerHTML = '<div class="renames-empty">Loading…</div>';
     loadRenames();
     refreshReviewBadge();
@@ -198,11 +206,13 @@ function renderRenames() {
       <input class="search-input" type="search" id="renames-filter" placeholder="Search names or brand…" value="${escapeHtml(renames.filter)}" />
       <a class="btn btn-sm" href="/api/sku-merges/export.csv" download>⭳ Export CSV</a>
     </div>
+    ${rows.length ? `<div class="kb-hint">Keyboard: <kbd>↑</kbd> <kbd>↓</kbd> move ·
+      ${renames.tab === 'pending' ? '<kbd>M</kbd> same item · <kbd>N</kbd> not the same · ' : ''}${renames.tab === 'merged' ? '<kbd>N</kbd> not the same item · ' : ''}<kbd>U</kbd> undo</div>` : ''}
     <div class="table-x">${table}</div>${more}`;
 
   const filterEl = document.getElementById('renames-filter');
   filterEl.addEventListener('input', () => {
-    renames.filter = filterEl.value; renames.shown = RENAMES_PAGE;
+    renames.filter = filterEl.value; renames.shown = RENAMES_PAGE; renames.cursor = 0;
     const pos = filterEl.selectionStart;
     renderRenames();
     const again = document.getElementById('renames-filter');
@@ -210,10 +220,60 @@ function renderRenames() {
   });
   document.getElementById('renames-more')?.addEventListener('click', () => { renames.shown += RENAMES_PAGE; renderRenames(); });
   body.querySelectorAll('button[data-act]').forEach(btn => btn.addEventListener('click', () => {
-    const r = page[Number(btn.closest('tr').dataset.i)];
+    renames.cursor = Number(btn.closest('tr').dataset.i);
+    const r = page[renames.cursor];
     decideRename(r, btn.dataset.act, btn);
   }));
+  renames.page = page;
+  renames.cursor = Math.min(renames.cursor, Math.max(page.length - 1, 0));
+  highlightCursor(false);
 }
+
+// ---------- keyboard shortcuts ----------
+// Working through a long list is mostly "look, decide, next" — so the
+// keys act on one highlighted row and, after a decision, move on to the
+// next row still waiting.
+function highlightCursor(scroll) {
+  const trs = document.querySelectorAll('#renames-body tbody tr[data-i]');
+  trs.forEach(tr => tr.classList.toggle('kb-current', Number(tr.dataset.i) === renames.cursor));
+  const cur = document.querySelector('#renames-body tbody tr.kb-current');
+  if (scroll && cur) cur.scrollIntoView({ block: 'nearest' });
+}
+function nextUndecided(from) {
+  for (let i = from + 1; i < renames.page.length; i++) {
+    const r = renames.page[i];
+    if (!renames.local.has(renameKey(r.old_name, r.new_name))) return i;
+  }
+  return Math.min(from + 1, renames.page.length - 1);
+}
+document.addEventListener('keydown', ev => {
+  if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+  const t = ev.target;
+  if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+  if (document.querySelector('.modal-backdrop') || !renames.page.length) return;
+  const key = ev.key.toLowerCase();
+  if (key === 'arrowdown' || key === 'j') {
+    renames.cursor = Math.min(renames.cursor + 1, renames.page.length - 1);
+  } else if (key === 'arrowup' || key === 'k') {
+    renames.cursor = Math.max(renames.cursor - 1, 0);
+  } else if (key === 'm' || key === 'n' || key === 'u') {
+    const act = { m: 'merge', n: 'separate', u: 'undo' }[key];
+    const tr = document.querySelector(`#renames-body tbody tr[data-i="${renames.cursor}"]`);
+    const btn = tr && tr.querySelector(`button[data-act="${act}"]`);
+    if (!btn || btn.disabled) return;  // e.g. M on the Merged tab, or U on an undecided row
+    ev.preventDefault();
+    const at = renames.cursor;
+    decideRename(renames.page[at], act, btn).then(() => {
+      if (act !== 'undo') renames.cursor = nextUndecided(at);
+      highlightCursor(true);
+    });
+    return;
+  } else {
+    return;
+  }
+  ev.preventDefault();
+  highlightCursor(true);
+});
 
 async function decideRename(r, act, btn) {
   const key = renameKey(r.old_name, r.new_name);
