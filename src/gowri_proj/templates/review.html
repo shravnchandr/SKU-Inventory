@@ -9,6 +9,9 @@
 
 {% block head %}
 <style>
+  /* Lets a wide table scroll sideways inside its own box on a phone instead of
+     widening the page (same as on Reports). */
+  .table-x { overflow-x: auto; }
   /* ---------- renamed items ---------- */
   .renames-controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin: 10px 0; }
   .renames-controls .search-input {
