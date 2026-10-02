@@ -65,6 +65,22 @@ Rules that keep this safe:
 | Dashboard: Download all lists (Excel) | 2026-10-01 | `9e5d5f7` | `merged/excel-all-lists` | No |
 | Dashboard: stale-data notice (>35 days) | 2026-10-01 | `f796fd3` | `merged/stale-data-banner` | No |
 | Value segments: share of stock value per tile | 2026-10-01 | `b4435e6` | `merged/segment-value-share` | No |
+| Reminder to upload a fresh item list when older than the latest report | 2026-10-01 | `a857b79` | `merged/item-list-reminder` | New table (see below) |
+
+### Item list reminder — `feature/item-list-reminder`
+
+Recall: `git revert -m 1 a857b79`
+
+- When the item list is older than the latest report: "Your item list is
+  from 9 Aug and the latest report is 17 Aug. Upload a fresh one so renames
+  are recognised automatically." — toast after a stock-statement upload,
+  and an Import health row (counted as an issue) with an "Upload item list"
+  button. Says so if no list was ever uploaded.
+- DB: adds one-row table `item_catalog_info` holding the list's own "as on"
+  date (written only after a successful upload; NULL if the file had none).
+  Lists uploaded earlier fall back to their upload day. Reverting leaves the
+  table unused — harmless.
+- Tests: `tests/test_item_list_reminder.py`.
 
 ### Review list rules tightened — `fix/review-skip-size-changes`
 

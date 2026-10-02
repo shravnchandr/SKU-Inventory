@@ -137,6 +137,8 @@ stop the app. Everything from here on is point-and-click:
   everything, item codes included, and every decision has an Undo. Nothing
   in your imported reports is changed. Upload the item list each month with
   the stock statement: renames it records are recognised from its codes.
+  Reports reminds you (and so does each stock-statement upload) when the
+  item list is older than the latest report.
 - **Item code list** (on the Reports page, collapsed — optional) — upload
   your POS system's master item list (a stable code per item, independent of
   whatever name it's currently sold under) and the app can tell an actual
