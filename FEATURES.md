@@ -66,6 +66,33 @@ Rules that keep this safe:
 | Dashboard: stale-data notice (>35 days) | 2026-10-01 | `f796fd3` | `merged/stale-data-banner` | No |
 | Value segments: share of stock value per tile | 2026-10-01 | `b4435e6` | `merged/segment-value-share` | No |
 | Reminder to upload a fresh item list when older than the latest report | 2026-10-01 | `a857b79` | `merged/item-list-reminder` | New table (see below) |
+| Rescan recognises the item list instead of rejecting it | 2026-10-01 | `3d24439` | `merged/rescan-item-list` | No |
+| Dated item list copies (last 6 months); rescan imports a newer list (depends on rescan fix) | 2026-10-01 | `f4a731d` | `merged/item-list-archive` | No |
+
+### Rescan recognises the item list — `fix/rescan-item-list`
+
+Recall: revert `feature/item-list-archive` **first** (it builds on this),
+then `git revert -m 1 3d24439`.
+
+- Rescan used to parse `uploads/item_catalog.xlsx` as a stock statement and
+  list it under "Files rejected". It now recognises an item list by its
+  "Item List as on" banner (any filename) and records it as status
+  `item_list`, which isn't a rejection. An unchanged file previously
+  rejected is re-checked, so the old false entry clears itself.
+- Tests: `tests/test_sync_item_list.py`.
+
+### Item list archive — `feature/item-list-archive`
+
+Recall: `git revert -m 1 f4a731d`
+
+- Each item list that becomes current is also kept as
+  `uploads/item_lists/<FY>/item_list_<date>.<ext>`; only the last 6 months
+  (183 days back from the newest list's date) are kept. The cleanup only
+  deletes files matching that name pattern under `item_lists/`.
+- Rescan imports an item list found anywhere in `uploads/` if it's newer
+  than the current one (copies it to `item_catalog.xlsx`, archives it);
+  older or undated lists are noted, never imported.
+- Tests: `tests/test_item_list_archive.py`.
 
 ### Item list reminder — `feature/item-list-reminder`
 

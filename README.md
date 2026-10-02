@@ -138,7 +138,11 @@ stop the app. Everything from here on is point-and-click:
   in your imported reports is changed. Upload the item list each month with
   the stock statement: renames it records are recognised from its codes.
   Reports reminds you (and so does each stock-statement upload) when the
-  item list is older than the latest report.
+  item list is older than the latest report. Upload it on the Reports page,
+  or drop the export into the `uploads/` folder and click Rescan — a newer
+  list is picked up automatically (an older one never replaces it). The
+  current list is `uploads/item_catalog.xlsx`; dated copies of the last six
+  months are kept under `uploads/item_lists/<financial year>/`.
 - **Item code list** (on the Reports page, collapsed — optional) — upload
   your POS system's master item list (a stable code per item, independent of
   whatever name it's currently sold under) and the app can tell an actual
