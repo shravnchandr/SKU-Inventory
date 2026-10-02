@@ -25,8 +25,8 @@ def client(tmp_path):
     app = create_app(db_path=str(tmp_path / "test.db"), uploads_dir=str(tmp_path / "uploads"))
     with db.connect(app.config["DB_PATH"]) as conn:
         for start, end, rows in [
-            ("2026-01-01", "2026-01-31", [_row("DOLO 200MG TAB", 20, 15, 5), _row("EPIVAL TAB", 90, 80, 10)]),
-            ("2026-02-01", "2026-02-28", [_row("DOLO 800MG TAB", 15, 10, 5), _row("EPIVAL TAB (NON)", 80, 80)]),
+            ("2026-01-01", "2026-01-31", [_row("GLOEYE TAB", 20, 15, 5), _row("EPIVAL TAB", 90, 80, 10)]),
+            ("2026-02-01", "2026-02-28", [_row("GLOEYE PLUS TAB", 15, 10, 5), _row("EPIVAL TAB (NON)", 80, 80)]),
         ]:  # fmt: skip
             db.import_report(
                 conn, pd.DataFrame(rows, columns=TIDY_COLUMNS),
@@ -47,28 +47,28 @@ def test_lists_the_automatic_merge_and_the_suggestion(client):
         ("EPIVAL TAB", "EPIVAL TAB (NON)", "pharmacy tag")
     ]
     assert [(s["old_name"], s["new_name"]) for s in data["pending"]] == [
-        ("DOLO 200MG TAB", "DOLO 800MG TAB")
+        ("GLOEYE TAB", "GLOEYE PLUS TAB")
     ]
     assert data["decided"] == []
 
 
 def test_approve_then_undo(client):
     c, app = client
-    assert c.get("/api/sku-detail?brand=BRAND&sku=DOLO%20800MG%20TAB").get_json()["aliases"] == []
+    assert c.get("/api/sku-detail?brand=BRAND&sku=GLOEYE%20PLUS%20TAB").get_json()["aliases"] == []
 
     resp = _post(c, app, "/api/sku-merges",
-                 {"old_name": "DOLO 200MG TAB", "new_name": "DOLO 800MG TAB", "decision": "merge"})  # fmt: skip
+                 {"old_name": "GLOEYE TAB", "new_name": "GLOEYE PLUS TAB", "decision": "merge"})  # fmt: skip
     assert resp.status_code == 200
     data = c.get("/api/sku-merges").get_json()
     assert data["pending"] == []
     assert data["decided"][0]["effect"] == "merged"
     # Every page sees it straight away — no restart, no re-import.
-    detail = c.get("/api/sku-detail?brand=BRAND&sku=DOLO%20800MG%20TAB").get_json()
-    assert detail["aliases"] == ["DOLO 200MG TAB"]
+    detail = c.get("/api/sku-detail?brand=BRAND&sku=GLOEYE%20PLUS%20TAB").get_json()
+    assert detail["aliases"] == ["GLOEYE TAB"]
     assert len(detail["history"]) == 2
 
     assert _post(c, app, "/api/sku-merges/undo",
-                 {"old_name": "DOLO 200MG TAB", "new_name": "DOLO 800MG TAB"}).get_json()["status"] == "undone"  # fmt: skip
+                 {"old_name": "GLOEYE TAB", "new_name": "GLOEYE PLUS TAB"}).get_json()["status"] == "undone"  # fmt: skip
     data = c.get("/api/sku-merges").get_json()
     assert len(data["pending"]) == 1 and data["decided"] == []
 
@@ -76,7 +76,7 @@ def test_approve_then_undo(client):
 def test_reject_suggestion(client):
     c, app = client
     _post(c, app, "/api/sku-merges",
-          {"old_name": "DOLO 200MG TAB", "new_name": "DOLO 800MG TAB", "decision": "separate"})  # fmt: skip
+          {"old_name": "GLOEYE TAB", "new_name": "GLOEYE PLUS TAB", "decision": "separate"})  # fmt: skip
     data = c.get("/api/sku-merges").get_json()
     assert data["pending"] == []
     assert data["decided"][0]["decision"] == "separate"
@@ -102,10 +102,10 @@ def test_decision_requires_csrf_token(client):
 @pytest.mark.parametrize(
     "body",
     [
-        {"old_name": "DOLO 200MG TAB", "new_name": "DOLO 800MG TAB", "decision": "maybe"},
-        {"old_name": "DOLO 200MG TAB", "decision": "merge"},
-        {"old_name": "DOLO 200MG TAB", "new_name": "DOLO 200MG TAB", "decision": "merge"},
-        {"old_name": 5, "new_name": "DOLO 800MG TAB", "decision": "merge"},
+        {"old_name": "GLOEYE TAB", "new_name": "GLOEYE PLUS TAB", "decision": "maybe"},
+        {"old_name": "GLOEYE TAB", "decision": "merge"},
+        {"old_name": "GLOEYE TAB", "new_name": "GLOEYE TAB", "decision": "merge"},
+        {"old_name": 5, "new_name": "GLOEYE PLUS TAB", "decision": "merge"},
     ],
 )
 def test_bad_decision_requests_are_rejected(client, body):
@@ -119,7 +119,7 @@ def test_unknown_names_are_rejected(client):
         c,
         app,
         "/api/sku-merges",
-        {"old_name": "NOPE", "new_name": "DOLO 800MG TAB", "decision": "merge"},
+        {"old_name": "NOPE", "new_name": "GLOEYE PLUS TAB", "decision": "merge"},
     )
     assert resp.status_code == 404
 
@@ -144,15 +144,16 @@ def test_renamed_item_is_not_reported_as_new_and_vanished(client):
     churn = c.get("/api/import-health").get_json()["sku_churn"]
     names = {r["sku"] for r in churn["new_skus"] + churn["vanished_skus"]}
     assert "EPIVAL TAB" not in names and "EPIVAL TAB (NON)" not in names
-    # The Dolo pair is still waiting for a decision, so it does show.
-    assert {"DOLO 200MG TAB", "DOLO 800MG TAB"} <= names
+    # The GLOEYE pair is still waiting for a decision, so it does show.
+    assert {"GLOEYE TAB", "GLOEYE PLUS TAB"} <= names
 
 
 def test_export_lists_merges_and_pending(client):
     c, _ = client
     text = c.get("/api/sku-merges/export.csv").data.decode("utf-8-sig")
-    assert "Merged,EPIVAL TAB,EPIVAL TAB (NON),pharmacy tag" in text
-    assert "Waiting for review,DOLO 200MG TAB,DOLO 800MG TAB" in text
+    # Brand filled in for merged rows too (it was blank before).
+    assert "Merged,EPIVAL TAB,EPIVAL TAB (NON),pharmacy tag,EPIVAL TAB (NON),BRAND" in text
+    assert "Waiting for review,GLOEYE TAB,GLOEYE PLUS TAB" in text
 
 
 def test_reports_page_has_the_card(client):

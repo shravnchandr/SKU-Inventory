@@ -154,16 +154,53 @@ def test_same_spelling_without_stock_carried_over_does_not_merge():
     assert res.suggestions == []
 
 
-def test_dolo_200_to_800_is_never_merged_automatically_only_suggested():
+def test_dolo_200_to_800_is_never_merged_nor_even_suggested():
     # Every condition except the name lines up: same brand, Dolo 200 vanished
-    # holding 15, Dolo 800 appeared opening with exactly 15.
+    # holding 15, Dolo 800 appeared opening with exactly 15. A different
+    # strength is a different product — not something to ask about.
     e = _entries([_row("DOLO 200MG TAB", 20, 15, 5)], [_row("DOLO 800MG TAB", 15, 10, 5)])
     res = resolve(e)
     assert not _same(res, "DOLO 200MG TAB", "DOLO 800MG TAB")
-    assert [(s["old_name"], s["new_name"]) for s in res.suggestions] == [
-        ("DOLO 200MG TAB", "DOLO 800MG TAB")
-    ]
-    assert res.suggestions[0]["stock"] == 15
+    assert res.suggestions == []
+
+
+@pytest.mark.parametrize(
+    "old, new",
+    [
+        # The pharmacy's own examples of wrong suggestions: pack size changed.
+        ("CLINDAC A GEL 20GM", "CLINDAC A GEL 30GM"),
+        ("DR.ORTHO OIL 100ML", "DR.ORTHO OIL 120ML"),
+        ("SEBA LIQUID FACE & BODYWASH 400ML", "SEBA LIQUID FACE & BODYWASH 200ML"),
+        ("NEOSHIELD ULTRA GEL 60GM", "NEOSHIELD ULTRA GEL 50GM"),
+        ("PAMP PREM L 48'S", "PAMP PREM L 44S"),
+    ],
+)
+def test_changed_pack_size_is_not_suggested(old, new):
+    e = _entries([_row(old, 20, 15, 5)], [_row(new, 15, 10, 5)])
+    res = resolve(e)
+    assert not _same(res, old, new)
+    assert res.suggestions == []
+
+
+@pytest.mark.parametrize(
+    "old, new",
+    [
+        ("BIGEN BEARD BROWN BLACK B102", "BIGEN BEARD BROWN BLACK B102 40GM"),  # pack size added
+        ("D3 MUST 60K TAB (8'S)", "D3 MUST 60K TAB"),  # count dropped
+        ("GLOEYE TAB", "GLOEYE PLUS TAB"),  # same numbers, a word added
+    ],
+)
+def test_number_only_added_or_removed_or_word_differs_is_still_suggested(old, new):
+    e = _entries([_row(old, 20, 15, 5)], [_row(new, 15, 10, 5)])
+    res = resolve(e)
+    assert not _same(res, old, new)
+    assert [(s["old_name"], s["new_name"]) for s in res.suggestions] == [(old, new)]
+
+
+def test_moved_space_that_hides_a_unit_is_still_same_spelling():
+    assert same_spelling("D -PROTIN 500GMV/F", "D -PROTIN 500GM V/F")
+    e = _entries([_row("D -PROTIN 500GMV/F", 5, 3, 2)], [_row("D -PROTIN 500GM V/F", 3, 3)])
+    assert _same(resolve(e), "D -PROTIN 500GMV/F", "D -PROTIN 500GM V/F")
 
 
 def test_different_brand_is_not_even_suggested():
@@ -219,15 +256,33 @@ def test_25_char_prefix_code_needs_matching_numbers():
     assert not _same(res, long200, long400)
 
 
-def test_25_char_prefix_code_merges_with_exact_match_when_numbers_agree():
+def test_25_char_prefix_code_merges_only_with_the_same_spelling():
     full = "SIMILAC PLUS [IQ] NO-1 400GM"
-    e = _entries(
-        [_row("SIMILAC PLUS [IQ] NO-1 400GM", 5, 5)], [_row("SIMILAC IQ NO-1 400GM", 5, 5)]
-    )
+    respelled = "SIMILAC PLUS [IQ] NO-1 400 GM"
+    cat = pd.DataFrame([{"code": "SIM30", "product_name": full[:25], "long_name": None}])
+    e = _entries([_row(full, 5, 5)], [_row(respelled, 5, 5)])
+    assert _same(resolve(e, CodeLookup(cat)), full, respelled)
+
+
+def test_long_name_code_alone_does_not_merge_different_variants():
+    # The item list has codes whose short and long names name different
+    # variants (seen in real data). Without the same spelling, that's not
+    # sure enough to merge automatically — it's asked about instead.
     cat = pd.DataFrame(
-        [{"code": "SIM30", "product_name": full[:25], "long_name": "SIMILAC IQ NO-1 400GM"}]
+        [
+            {
+                "code": "PA1",
+                "product_name": "P/A S/C COOL BLUE 84GM",
+                "long_name": "P/A S/C CLASSIC 84GM",
+            }
+        ]
     )
-    assert _same(resolve(e, CodeLookup(cat)), full, "SIMILAC IQ NO-1 400GM")
+    e = _entries([_row("P/A S/C CLASSIC 84GM", 5, 5)], [_row("P/A S/C COOL BLUE 84GM", 5, 5)])
+    res = resolve(e, CodeLookup(cat))
+    assert not _same(res, "P/A S/C CLASSIC 84GM", "P/A S/C COOL BLUE 84GM")
+    assert [(s["old_name"], s["new_name"]) for s in res.suggestions] == [
+        ("P/A S/C CLASSIC 84GM", "P/A S/C COOL BLUE 84GM")
+    ]
 
 
 def test_ambiguous_name_is_treated_as_unknown():
@@ -321,11 +376,14 @@ def test_apply_with_nothing_merged_changes_nothing_but_adds_source_sku():
 
 
 def test_apply_sums_two_code_merged_names_in_one_report():
+    # Two names the rename log ties to one code (a strong match), both in
+    # one report: summed into one row.
     e = _entries([_row("SYP A 60ML", 5, 5), _row("SYP A LONGNAME 60ML", 2, 2)])
-    cat = pd.DataFrame(
-        [{"code": "S1", "product_name": "SYP A 60ML", "long_name": "SYP A LONGNAME 60ML"}]
+    log = pd.DataFrame(
+        [{"code": "S1", "old_name": "SYP A LONGNAME 60ML", "new_name": "SYP A 60ML"}]
     )
-    out = identity.apply(e, resolve(e, CodeLookup(cat)))
+    cat = pd.DataFrame([{"code": "S1", "product_name": "SYP A 60ML", "long_name": None}])
+    out = identity.apply(e, resolve(e, CodeLookup(cat, log)))
     assert len(out) == 1
     assert out["closing_stock"].iloc[0] == 7
 

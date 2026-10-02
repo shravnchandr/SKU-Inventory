@@ -20,9 +20,11 @@ Evidence, strongest first:
    statement). Same code = same item; *different* codes = never the same
    item, whatever any other rule says. The item list truncates product names
    to 25 characters, so a longer stock-statement name is matched on its
-   first 25 — but a code found only that way is weaker evidence (two
-   strengths can share their first 25 characters), so it merges names only
-   when every number in them is the same.
+   first 25. A code found only that way, or only through the item list's
+   *long* name, is weaker evidence: two strengths can share their first 25
+   characters, and the item list has codes whose short and long names name
+   different variants ("P/A S/C CLASSIC" / "P/A S/C COOL BLUE"). Those merge
+   automatically only when the spelling is identical (rule 3's test).
 2. **Pharmacy tags** — names that are identical once "(NON)", "(RECALL)" and
    a leading "ZZ" are removed.
 3. **Same spelling with stock carried over** — between consecutive reports,
@@ -35,7 +37,13 @@ Anything weaker — a word or number added, removed or changed — is never
 merged automatically, because for medicines those differences *are* the
 identity ("DOLO 200MG" vs "DOLO 800MG", "GLOEYE TAB" vs "GLOEYE PLUS TAB",
 "TOPLAP CREAM" vs "TOPLAP GEL"). If stock was carried over between them it
-becomes a *suggestion* that someone must approve, one by one.
+becomes a *suggestion* that someone must approve, one by one — unless a
+number *changed* ("CLINDAC A GEL 20GM" -> "30GM", "PAMP PREM L 48'S" ->
+"44S"): a different strength, pack size or count is a different product,
+so that's not even asked. (The POS did carry stock across those, at the
+2026 financial-year rollover, but the pharmacy treats each pack size as its
+own product.) A number only added or removed ("BIGEN … B102" -> "B102
+40GM", a pack size that was missing) is still asked about.
 
 People have the last word, in both directions (db.sku_merge_decisions,
 stored so a long review can be worked through over several days):
@@ -57,7 +65,7 @@ never merged.
 from __future__ import annotations
 
 import re
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from difflib import SequenceMatcher
 from itertools import pairwise
@@ -107,11 +115,23 @@ def same_spelling(a: str, b: str) -> bool:
     order — every letter and every number the same. "PRONATE - 40 TAB" and
     "PRONATE-40TAB" are; "DOLO 200MG" and "DOLO 800MG" are not."""
     wa, wb = _words(a), _words(b)
-    return "".join(wa) == "".join(wb) or sorted(wa) == sorted(wb)
+    if "".join(wa) == "".join(wb) or sorted(wa) == sorted(wb):
+        return True
+    # The same letters and digits in the same order, before unit spellings
+    # are touched — a moved space can stop a unit from being recognised
+    # ("D -PROTIN 500GMV/F" vs "D -PROTIN 500GM V/F": "GM" runs into "V").
+    return re.sub(r"[^A-Z0-9]", "", base_name(a)) == re.sub(r"[^A-Z0-9]", "", base_name(b))
 
 
 def _numbers(name: str) -> list[float]:
     return sorted(float(x) for x in re.findall(r"\d+(?:\.\d+)?", base_name(name)))
+
+
+def number_changed(a: str, b: str) -> bool:
+    """Each name has a number the other doesn't — a strength, pack size or
+    count was *replaced* ("20GM" -> "30GM"), not just added or dropped."""
+    na, nb = Counter(_numbers(a)), Counter(_numbers(b))
+    return bool(na - nb) and bool(nb - na)
 
 
 def name_similarity(a: str, b: str) -> float:
@@ -122,37 +142,49 @@ def name_similarity(a: str, b: str) -> float:
 class CodeLookup:
     """Stock-statement name -> item code, from the item list(s).
 
-    Built from the current item list (product name and long name) plus every
-    earlier name the rename log has seen for a code (db.item_name_changes,
-    which grows with each monthly upload). A name that maps to more than one
-    code is treated as unknown rather than guessed.
+    Built from the current item list plus every earlier name the rename log
+    has seen for a code (db.item_name_changes, which grows with each monthly
+    upload). Product names and rename-log names are the strong match; the
+    item list's long name, and the 25-character cut-off, are weaker (see the
+    module docstring). A name that maps to more than one code is treated as
+    unknown rather than guessed.
     """
 
     def __init__(self, catalog: pd.DataFrame | None = None, rename_log: pd.DataFrame | None = None):
-        self._codes: dict[str, set[str]] = defaultdict(set)
+        self._strong: dict[str, set[str]] = defaultdict(set)
+        self._long: dict[str, set[str]] = defaultdict(set)
+
+        def _add(index, names, codes):
+            for name, code in zip(names, codes, strict=True):
+                if isinstance(name, str) and name.strip():
+                    index[name.strip().upper()].add(str(code))
+
         if catalog is not None and not catalog.empty:
-            for col in ("product_name", "long_name"):
-                for name, code in zip(catalog[col], catalog["code"], strict=True):
-                    if isinstance(name, str) and name.strip():
-                        self._codes[name.strip().upper()].add(str(code))
+            _add(self._strong, catalog["product_name"], catalog["code"])
+            _add(self._long, catalog["long_name"], catalog["code"])
         if rename_log is not None and not rename_log.empty:
-            for col in ("old_name", "new_name"):
-                for name, code in zip(rename_log[col], rename_log["code"], strict=True):
-                    if isinstance(name, str) and name.strip():
-                        self._codes[name.strip().upper()].add(str(code))
+            _add(self._strong, rename_log["old_name"], rename_log["code"])
+            _add(self._strong, rename_log["new_name"], rename_log["code"])
 
     def __bool__(self) -> bool:
-        return bool(self._codes)
+        return bool(self._strong or self._long)
 
     def code_for(self, name: str) -> tuple[str | None, bool]:
-        """(code, exact). ``exact`` is False when the code was only found by
-        cutting the name to the item list's 25 characters."""
+        """(code, exact). ``exact`` is False when the code was only found via
+        the item list's long name or its 25-character cut-off."""
         key = str(name).strip().upper()
-        codes, exact = self._codes.get(key), True
-        if not codes and len(key) > CATALOG_NAME_MAX:
-            codes, exact = self._codes.get(key[:CATALOG_NAME_MAX].rstrip()), False
-        if codes and len(codes) == 1:
-            return next(iter(codes)), exact
+        for codes, exact in (
+            (self._strong.get(key), True),
+            (self._long.get(key), False),
+            (
+                self._strong.get(key[:CATALOG_NAME_MAX].rstrip())
+                if len(key) > CATALOG_NAME_MAX
+                else None,
+                False,
+            ),
+        ):
+            if codes:
+                return (next(iter(codes)), exact) if len(codes) == 1 else (None, False)
         return None, False
 
 
@@ -326,8 +358,8 @@ def resolve(
 
     # 1. Item codes. The POS is the authority here, so the same-report guard
     # doesn't apply (rows are summed if it ever happens). Names matched
-    # exactly are merged outright; a name matched only on its first 25
-    # characters joins only a name with exactly the same numbers in it.
+    # exactly are merged outright; one matched only on its first 25
+    # characters or via a long name joins only a name spelled the same.
     by_code: dict[str, list[str]] = defaultdict(list)
     for n, c in code_of.items():
         if c:
@@ -338,7 +370,7 @@ def resolve(
             _merge(exact[0], other, REASON_CODE, allow_cooccurring=True)
         placed = list(exact)
         for m in (m for m in members if not looked_up[m][1]):
-            match = next((p for p in placed if _numbers(p) == _numbers(m)), None)
+            match = next((p for p in placed if same_spelling(p, m)), None)
             if match is not None:
                 _merge(match, m, REASON_CODE, allow_cooccurring=True)
             placed.append(m)
@@ -382,6 +414,8 @@ def resolve(
             continue
         if groups.why_not(h.old_name, h.new_name):
             continue  # can't merge even if approved (or already rejected) — don't ask
+        if number_changed(h.old_name, h.new_name):
+            continue  # a different strength/pack size is a different product — don't ask
         suggestions.append(
             {
                 "old_name": h.old_name,

@@ -721,20 +721,29 @@ def create_app(
 
     # ---------- renamed items (identity.py) ----------
 
+    def _latest_brand_by_sku(entries: pd.DataFrame) -> dict[str, str]:
+        """Each item's brand as of the most recent report it's in — not just
+        the latest report, which a merged-then-discontinued item isn't in."""
+        latest = entries.sort_values(["period_end", "period_start"]).drop_duplicates(
+            "sku", keep="last"
+        )
+        return latest.set_index("sku")["brand"].to_dict()
+
     @app.get("/api/sku-merges")
     def api_sku_merges():
         """Everything the Reports page's "Renamed items" card shows: merges
         already applied (automatic and approved), suggestions waiting for a
         decision, and every stored decision (so any of them can be undone)."""
-        _, summary, _ = get_current_data()
+        all_entries, summary, _ = get_current_data()
         resolution = current_identity()
         if summary is None or resolution is None:
             return jsonify(merged=[], pending=[], decided=[])
         current_brand = summary.enriched.set_index("sku")["brand"].to_dict()
+        brand_of = _latest_brand_by_sku(all_entries)
         merged = [
             {
                 **m,
-                "brand": current_brand.get(m["display_name"]),
+                "brand": brand_of.get(m["display_name"]),
                 "current": m["display_name"] in current_brand,
             }
             for m in resolution.merges
@@ -793,11 +802,20 @@ def create_app(
     def api_sku_merges_export():
         """Every applied merge and every pending suggestion, for checking
         the whole list in Excel."""
-        _, _, _ = get_current_data()
+        all_entries, summary, _ = get_current_data()
         resolution = current_identity()
         rows = []
-        if resolution is not None:
-            rows += [{"status": "Merged", "how": m["reason"], **m} for m in resolution.merges]
+        if resolution is not None and summary is not None:
+            brand_of = _latest_brand_by_sku(all_entries)
+            rows += [
+                {
+                    "status": "Merged",
+                    "how": m["reason"],
+                    "brand": brand_of.get(m["display_name"]),
+                    **m,
+                }
+                for m in resolution.merges
+            ]
             rows += [
                 {"status": "Waiting for review", "how": "stock carried over", **sug}
                 for sug in resolution.suggestions
