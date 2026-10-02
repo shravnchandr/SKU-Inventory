@@ -16,6 +16,7 @@ import tempfile
 import threading
 import time
 from contextlib import contextmanager
+from datetime import UTC, datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -70,6 +71,10 @@ MAX_UPLOAD_BYTES = 50 * 1024 * 1024  # 50MB — generous for a stock statement e
 
 
 _ERROR_LOG_HANDLER_MARK = "_gowri_error_log_handler"
+
+# The Dashboard says so once the latest import is older than this — about a
+# month plus a few days' grace for the next export to be made.
+STALE_DATA_DAYS = 35
 
 # Browser-tab icon: stacked boxes (inventory) in the app's accent teal
 # (base.html's --accent). Inline rather than a static file — the app has no
@@ -609,6 +614,12 @@ def create_app(
         if summary is None:
             return redirect(url_for("reports"))
         payload = _sanitize(build_payload(summary, None, thresholds))
+        # How old the newest data is, as of today on this computer — kept
+        # out of build_payload (which stays a pure function of the data) and
+        # added here, where "today" means something.
+        today = datetime.now(UTC).astimezone().date()  # this computer's local date
+        payload["meta"]["days_since_latest"] = (today - summary.meta.latest_period_end).days
+        payload["meta"]["stale_after_days"] = STALE_DATA_DAYS
         return render_template("dashboard.html", active_page="dashboard", payload=payload)
 
     @app.get("/trends")
