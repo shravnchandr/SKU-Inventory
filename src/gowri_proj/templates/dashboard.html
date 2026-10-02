@@ -188,15 +188,11 @@ document.getElementById('footer-note').textContent =
 (function () {
   const days = DATA.meta.days_since_latest;
   if (days === undefined || days <= DATA.meta.stale_after_days) return;
-  // "2026-08-17" -> "17 Aug 2026", read off the text (no new Date(), which
-  // can shift a day in a timezone behind UTC).
-  const [y, m, d] = DATA.meta.latest_period_end.split('-');
-  const month = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(m) - 1];
   const el = document.getElementById('stale-strip');
   el.style.display = '';
   el.classList.add('move-strip-notice');
   el.innerHTML = `<span class="status-swatch" style="background:${css.getPropertyValue('--status-warning').trim()}"></span>` +
-    `Your latest import covers up to ${Number(d)} ${month} ${y} — ${fmtNum(days)} days ago, so these figures may be out of date. ` +
+    `Your latest import covers up to ${fmtIsoDate(DATA.meta.latest_period_end, { dayPadded: false })} — ${fmtNum(days)} days ago, so these figures may be out of date. ` +
     `<a href="{{ url_for('reports') }}">Upload the next stock statement →</a>`;
 })();
 

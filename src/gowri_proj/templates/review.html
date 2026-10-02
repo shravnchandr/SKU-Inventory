@@ -78,14 +78,6 @@ const REASON_LABELS = {
   'approved': 'You approved it',
 };
 function renameKey(a, b) { return a + '\u0000' + b; }
-// "2026-04-01" -> "Apr 2026", read straight off the text rather than via
-// new Date() — the column only needs the month, and this way it can't shift
-// to the previous day/month in a timezone behind UTC.
-function fmtMonth(iso) {
-  const [y, m] = String(iso || '').split('-');
-  const names = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-  return names[Number(m) - 1] ? `${names[Number(m) - 1]} ${y}` : '–';
-}
 
 // The name with every word/number that isn't in the other name highlighted —
 // "DOLO <mark>200MG</mark>" next to "DOLO <mark>800MG</mark>".
@@ -165,7 +157,7 @@ function renderRenames() {
         <td>${escapeHtml(r.brand || '–')}</td>
         <td>${nameDiffHtml(r.old_name, r.new_name)}</td>
         <td>${nameDiffHtml(r.new_name, r.old_name)}</td>
-        <td>${escapeHtml(fmtMonth(r.period_start))}</td>
+        <td>${escapeHtml(fmtIsoDate(r.period_start, { monthOnly: true }))}</td>
         <td class="num">${fmtNum(r.stock)}</td>
         <td class="actions">${done
           ? `${done === 'merge' ? 'Merged ✓' : 'Kept separate'} <button class="btn btn-sm" data-act="undo" type="button">Undo</button>`

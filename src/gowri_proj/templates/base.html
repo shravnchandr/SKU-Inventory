@@ -694,6 +694,24 @@ function escapeHtml(s) {
 }
 
 // ---------- shared formatters ----------
+// ---------- calendar dates ----------
+// A calendar date (a report's period, an item list's "as on" date) has no
+// time of day, so it's formatted straight off its "YYYY-MM-DD" text. Going
+// through new Date("2026-04-01") reads it as midnight UTC, which a computer
+// behind UTC shows as 31 Mar — every report period on Reports was a day
+// early there. (Timestamps like "last refresh" are real moments and do go
+// through fmtDateTime below.)
+const MONTHS_SHORT = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// "2026-04-01" -> "01 Apr 2026"; { dayPadded: false } -> "1 Apr 2026";
+// { monthOnly: true } -> "Apr 2026". '–' for anything unparseable.
+function fmtIsoDate(iso, { monthOnly = false, dayPadded = true } = {}) {
+  const [y, m, d] = String(iso || '').slice(0, 10).split('-');
+  const month = MONTHS_SHORT[Number(m) - 1];
+  if (!y || !month || !d) return '–';
+  if (monthOnly) return `${month} ${y}`;
+  return `${dayPadded ? d.padStart(2, '0') : Number(d)} ${month} ${y}`;
+}
+
 // Returns null (not a placeholder string) on a falsy input — some callers
 // branch on that (e.g. "no refresh recorded yet" vs. a formatted date),
 // others just want a display string and add `|| '–'` at the call site.
