@@ -203,6 +203,28 @@ def parse_item_list_meta(raw: pd.DataFrame) -> ItemListMeta:
     return ItemListMeta(company, location, as_of)
 
 
+def _banner_rows(path: str, sheet) -> pd.DataFrame | None:
+    """The first rows of one sheet, or None if that sheet can't be read
+    (missing, wrong format, locked) — for sniffing a file's type only."""
+    try:
+        return pd.read_excel(path, sheet_name=sheet, header=None, nrows=10)
+    except Exception:  # noqa: BLE001 — any failure just means "can't tell from this sheet"
+        return None
+
+
+def is_item_list(path: str) -> bool:
+    """Whether this file is the POS "item list" export (not a stock
+    statement), judged by its banner ("Item List as on dd/mm/yyyy") — so a
+    folder scan can recognise one under any filename. Reads only the first
+    few rows. Never raises: anything unreadable is simply "not an item list"
+    and gets the normal stock-statement handling (and error message).
+    """
+    return any(
+        raw is not None and _scan_banner(raw, _ITEM_LIST_AS_OF_RE)[2] is not None
+        for raw in (_banner_rows(path, sheet) for sheet in ("Sheet2", 0))
+    )
+
+
 def parse_item_list(path: str, sheet_name: str = "Sheet2") -> tuple[pd.DataFrame, ItemListMeta]:
     """Parse the "item list" POS export into a tidy, one-row-per-code DataFrame.
 
