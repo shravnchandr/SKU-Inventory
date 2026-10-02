@@ -165,19 +165,35 @@ def _record_item_list(
     elif df.empty:
         detail = "An item list with no items in it — not used."
     elif current_as_of is None or meta.as_of > current_as_of:
-        db.import_item_catalog(conn, df)
-        db.set_item_catalog_as_of(conn, meta.as_of)
-        if rel_name != ITEM_CATALOG_FILENAME:
-            shutil.copyfile(path, folder / ITEM_CATALOG_FILENAME)
-            st = (folder / ITEM_CATALOG_FILENAME).stat()
-            db.upsert_watched_file(
-                conn, ITEM_CATALOG_FILENAME, st.st_size, int(st.st_mtime), None, ITEM_LIST_STATUS,
-                f"The current item list (dated {meta.as_of.isoformat()}).",
-            )  # fmt: skip
-        archive_item_list(conn, folder, path, meta.as_of, path.suffix)
-        prune_item_list_archive(conn, folder)
+        # Commit what this scan has done so far first: if the item list
+        # can't be imported (e.g. a code listed twice), rolling that back
+        # must not also undo statements imported earlier in this scan.
+        conn.commit()
+        try:
+            db.import_item_catalog(conn, df)
+            db.set_item_catalog_as_of(conn, meta.as_of)
+        except Exception as e:  # noqa: BLE001 — one bad file must not abort the rescan
+            conn.rollback()
+            msg = f"Couldn't import this item list ({e}). Check it, then upload it on the Reports page."
+            result.errors.append((rel_name, msg))
+            db.upsert_watched_file(conn, rel_name, filesize, mtime, None, "error", msg)
+            return
         result.item_lists_imported.append((rel_name, meta.as_of.isoformat()))
         detail = f"Imported as the current item list (dated {meta.as_of.isoformat()})."
+        # The list is in; keeping copies of the file is best-effort — a
+        # locked file (antivirus, Excel) just means no copy this time.
+        try:
+            if rel_name != ITEM_CATALOG_FILENAME:
+                shutil.copyfile(path, folder / ITEM_CATALOG_FILENAME)
+                st = (folder / ITEM_CATALOG_FILENAME).stat()
+                db.upsert_watched_file(
+                    conn, ITEM_CATALOG_FILENAME, st.st_size, int(st.st_mtime), None, ITEM_LIST_STATUS,
+                    f"The current item list (dated {meta.as_of.isoformat()}).",
+                )  # fmt: skip
+            archive_item_list(conn, folder, path, meta.as_of, path.suffix)
+            prune_item_list_archive(conn, folder)
+        except OSError as e:
+            detail += f" (Couldn't keep a copy of the file: {e}.)"
     elif meta.as_of == current_as_of:
         detail = f"The current item list (dated {meta.as_of.isoformat()})."
     else:
