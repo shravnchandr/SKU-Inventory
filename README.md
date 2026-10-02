@@ -172,8 +172,11 @@ built-in defaults.
 - **Dead stock** is judged differently from the other buckets — it's not
   part of that shared trailing window. A SKU is dead stock once at least
   `dead_stock_days` (default 90) days have passed since the *most recent* of
-  its last purchase or its last sale — whichever is more recent — with zero
-  activity since. A SKU restocked last month that hasn't sold yet isn't
+  its last restock or its last sale — whichever is more recent — with zero
+  activity since. "Restocked" means stock actually arrived: a paid purchase,
+  free/scheme units, or a transfer in that's larger than what went back out
+  as a return/adjustment that same period (an exchange — 5 in, the same 5
+  out — leaves the same old stock on the shelf, so it doesn't count). A SKU restocked last month that hasn't sold yet isn't
   dead; one restocked 4 months ago that still hasn't moved is; one that sold
   a handful of units right after being restocked a year ago but nothing
   since is dead too, once enough time has passed since *that* sale (a single

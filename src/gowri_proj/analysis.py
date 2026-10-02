@@ -363,7 +363,18 @@ def _compute_dead_stock(
     lookback_cutoff = latest_period_end - pd.Timedelta(days=lookback_days)
     recent = all_entries[all_entries["period_end"] >= lookback_cutoff]
 
-    last_purchase_end = recent[recent["purchase"] > 0].groupby("sku")["period_end"].max()
+    # "Restocked" means stock actually arrived: a paid purchase, free/scheme
+    # units, or a transfer in (other_receipt) larger than what went back out
+    # as a return/adjustment (other_issue) in the same period. The net test
+    # matters: in real data most other_receipt on dead stock was a swap —
+    # e.g. 5 units in and the same 5 out (an expiry exchange) — which leaves
+    # the same old stock sitting there and mustn't reset the dead-stock clock.
+    arrived = (
+        (recent["purchase"] > 0)
+        | (recent["purchase_free"] > 0)
+        | (recent["other_receipt"] - recent["other_issue"] > 0)
+    )
+    last_purchase_end = recent[arrived].groupby("sku")["period_end"].max()
     # sales_free counts as activity here too — a SKU only moving via scheme/
     # free units is still leaving the shelf, not sitting dead (see
     # daily_demand's docstring below for the fuller reasoning; same
